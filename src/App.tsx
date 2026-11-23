@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
 import { Activity, KeyRound, RefreshCw, WifiOff } from 'lucide-react';
 import {
@@ -13,8 +13,14 @@ import {
   fetchHealth,
   fetchProducts,
   fetchTicker,
+  ProxyRequestError,
   subscribeDeltaStream,
 } from './api/deltaApi';
+import {
+  fetchExplainStatus,
+  requestGeminiExplanation,
+  toAlertExplanationSummary,
+} from './api/explainApi';
 import {
   acknowledgeAlert,
   fetchAlerts,
@@ -34,7 +40,10 @@ import { GuardrailRulesPanel } from './components/GuardrailRulesPanel';
 import { InstrumentPicker } from './components/InstrumentPicker';
 import { LiveTickerStrip } from './components/LiveTickerStrip';
 import { PhaseRoadmapStrip } from './components/PhaseRoadmapStrip';
-import { RegimeCard } from './components/RegimeCard';
+import {
+  RegimeCard,
+  type RegimeChangeExplanationEntry,
+} from './components/RegimeCard';
 import { TopBar } from './components/TopBar';
 import {
   AuditHistoryPanel,
@@ -73,11 +82,17 @@ import type {
   DeltaWsConnectionState,
   HealthStatusResponse,
 } from './contracts/delta';
-import type { Phase2RegimeResponse } from './contracts/regime';
+import type { ExplainStatusResponse, ExplainUnavailableInputItem } from './contracts/explain';
+import type {
+  Phase2RegimeLabel,
+  Phase2RegimeResponse,
+  RegimeTransitionMarker,
+} from './contracts/regime';
 import type {
   AlertDecision,
   FirestoreDecisionRecord,
   GuardrailAlert,
+  GuardrailInputSnapshot,
   GuardrailRule,
 } from './contracts/guardrails';
 import type {
@@ -98,6 +113,7 @@ import {
   validateGuardrailRule,
 } from './guardrails/engine';
 import {
+  attachExplanationToFirestoreDecision,
   fetchUserDecisionsOnce,
   saveGuardrailDecisionToFirestore,
   subscribeToUserDecisions,
@@ -198,6 +214,21 @@ export default function App() {
   const [decisionsLoading, setDecisionsLoading] = useState<boolean>(false);
   const [decisionsError, setDecisionsError] = useState<ErrorState | null>(null);
   const [decisionsLastUpdated, setDecisionsLastUpdated] = useState<string | null>(null);
+
+  // Phase 4: Server-side Gemini explanations state
+  const [explainStatus, setExplainStatus] = useState<ExplainStatusResponse | null>(null);
+  const [regimeChangeExplanations, setRegimeChangeExplanations] = useState<
+    Record<string, RegimeChangeExplanationEntry>
+  >({});
+  const requestedAlertExplainIdsRef = useRef<Set<string>>(new Set());
+  const requestedTransitionExplainIdsRef = useRef<Set<string>>(new Set());
+  const attachedFirestoreExplainIdsRef = useRef<Set<string>>(new Set());
+  const guardrailAlertsRef = useRef<GuardrailAlert[]>(guardrailAlerts);
+  guardrailAlertsRef.current = guardrailAlerts;
+  const authUserRef = useRef<User | null>(authUser);
+  authUserRef.current = authUser;
+  const phase2RegimeRef = useRef<Phase2RegimeResponse | null>(phase2Regime);
+  phase2RegimeRef.current = phase2Regime;
 
   // Optional Alpaca read-only Market Data state (Step 1: client + bars chart)
   const [marketSource, setMarketSource] = useState<MarketDataSource>('delta');
@@ -528,17 +559,33 @@ export default function App() {
     [],
   );
 
+  const loadExplainStatus = useCallback(async () => {
+    try {
+      const status = await fetchExplainStatus();
+      setExplainStatus(status);
+    } catch {
+      setExplainStatus({
+        configured: false,
+        apiKeyConfigured: false,
+        modelConfigured: false,
+        reason: 'Explanations not configured (unable to reach /api/explain/status).',
+        checkedAt: new Date().toISOString(),
+      });
+    }
+  }, []);
+
   // Initial load + 30s health polling
   useEffect(() => {
     void loadHealth();
     void loadAlpacaHealth();
     void loadProducts();
+    void loadExplainStatus();
     const timer = setInterval(() => {
       void loadHealth();
       void loadAlpacaHealth();
     }, 30_000);
     return () => clearInterval(timer);
-  }, [loadHealth, loadAlpacaHealth, loadProducts]);
+  }, [loadHealth, loadAlpacaHealth, loadProducts, loadExplainStatus]);
 
   // Load Alpaca symbols only when Alpaca is selected AND configured on the server
   useEffect(() => {
@@ -741,6 +788,13 @@ export default function App() {
     [phase2Regime, guardrailRules],
   );
 
+  const latestRegimePreviousLabel: Phase2RegimeLabel | null = useMemo(() => {
+    if (!phase2Regime?.sufficientData || phase2Regime.transitions.length === 0) {
+      return null;
+    }
+    return phase2Regime.transitions[phase2Regime.transitions.length - 1].fromRegime;
+  }, [phase2Regime]);
+
   // Anti-spam alert reconciliation (only raises when action changes or a new rule fires, with cooldown)
   useEffect(() => {
     if (!guardrailEvaluation.available) return;
@@ -749,13 +803,247 @@ export default function App() {
         existingAlerts: prev,
         evaluation: guardrailEvaluation,
         cooldownSeconds,
+        previousRegime: latestRegimePreviousLabel,
       });
       if (!reconciled.createdAlert && reconciled.supersededCount === 0) {
         return prev;
       }
       return reconciled.alerts;
     });
-  }, [guardrailEvaluation, cooldownSeconds]);
+  }, [guardrailEvaluation, cooldownSeconds, latestRegimePreviousLabel]);
+
+  const buildUnavailableOptionalList = useCallback(
+    (regimeObj: Phase2RegimeResponse | null): ExplainUnavailableInputItem[] => {
+      if (!regimeObj) return [];
+      return regimeObj.inputs
+        .filter((i) => i.category === 'ticker_optional' && !i.available)
+        .map((i) => ({
+          id: i.id,
+          label: i.label,
+          reason: i.reasonIfExcluded || 'Excluded / not returned by Delta API',
+        }));
+    },
+    [],
+  );
+
+  const requestAlertExplanation = useCallback(
+    async (alert: GuardrailAlert, forceRefresh: boolean) => {
+      setGuardrailAlerts((prev) =>
+        prev.map((a) =>
+          a.id === alert.id
+            ? { ...a, explanationState: 'loading', explanationError: null }
+            : a,
+        ),
+      );
+
+      try {
+        const currentRegimeObj =
+          phase2RegimeRef.current?.symbol === alert.symbol ? phase2RegimeRef.current : null;
+        const apiRes = await requestGeminiExplanation({
+          kind: 'guardrail_alert',
+          targetId: alert.id,
+          symbol: alert.symbol,
+          timeframe: alert.timeframe,
+          previousRegime: alert.previousRegime,
+          currentRegime: alert.regime,
+          riskScore: alert.riskScore,
+          action: alert.action,
+          candleTimestamp: alert.candleTimestamp,
+          rulesFired: alert.ruleNames,
+          thresholds: alert.thresholds,
+          inputs: alert.inputValues,
+          unavailableOptionalInputs: buildUnavailableOptionalList(currentRegimeObj),
+          forceRefresh,
+        });
+
+        const summary = toAlertExplanationSummary(apiRes);
+        setGuardrailAlerts((prev) =>
+          prev.map((a) =>
+            a.id === alert.id
+              ? {
+                  ...a,
+                  explanationState: 'ready',
+                  explanation: summary,
+                  explanationError: null,
+                }
+              : a,
+          ),
+        );
+
+        // If user already approved/dismissed & saved this decision to Firestore while explanation was in-flight,
+        // attach the explanation once to the same decision document.
+        const latestAlert = guardrailAlertsRef.current.find((a) => a.id === alert.id);
+        if (
+          authUserRef.current &&
+          latestAlert?.firestoreState === 'saved' &&
+          !attachedFirestoreExplainIdsRef.current.has(alert.id)
+        ) {
+          attachedFirestoreExplainIdsRef.current.add(alert.id);
+          void attachExplanationToFirestoreDecision(alert.id, summary).catch(() => {
+            attachedFirestoreExplainIdsRef.current.delete(alert.id);
+          });
+        }
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Failed to generate Gemini explanation';
+        const timestamp =
+          err instanceof ProxyRequestError ? err.timestamp : new Date().toISOString();
+        setGuardrailAlerts((prev) =>
+          prev.map((a) =>
+            a.id === alert.id
+              ? {
+                  ...a,
+                  explanationState: 'error',
+                  explanationError: { message, timestamp },
+                }
+              : a,
+          ),
+        );
+      }
+    },
+    [buildUnavailableOptionalList],
+  );
+
+  // Trigger Gemini explanation asynchronously when a new alert enters the feed (cached per alert ID)
+  useEffect(() => {
+    if (!explainStatus?.configured) return;
+    for (const alert of guardrailAlerts) {
+      if (
+        alert.explanationState === 'idle' &&
+        !requestedAlertExplainIdsRef.current.has(alert.id)
+      ) {
+        requestedAlertExplainIdsRef.current.add(alert.id);
+        void requestAlertExplanation(alert, false);
+      }
+    }
+  }, [guardrailAlerts, explainStatus?.configured, requestAlertExplanation]);
+
+  const requestRegimeChangeExplanation = useCallback(
+    async (
+      regimeObj: Phase2RegimeResponse,
+      transition: RegimeTransitionMarker,
+      forceRefresh: boolean,
+    ) => {
+      const targetId = `regshift_${regimeObj.symbol}_${regimeObj.resolution}_${transition.time}`;
+
+      setRegimeChangeExplanations((prev) => ({
+        ...prev,
+        [targetId]: {
+          targetId,
+          state: 'loading',
+          explanation: prev[targetId]?.explanation ?? null,
+          error: null,
+        },
+      }));
+
+      const findOpt = (id: string): number | null => {
+        const item = regimeObj.inputs.find((entry) => entry.id === id);
+        return item && item.available && item.value !== null ? item.value : null;
+      };
+
+      const snapshot: GuardrailInputSnapshot = {
+        regime: transition.toRegime,
+        riskScore: transition.riskScore,
+        volZScore: transition.volZScore,
+        trendStrength: transition.trendStrength,
+        cusumMax: transition.cusumMax,
+        fundingRate: findOpt('fundingRate'),
+        markIndexBasis: findOpt('markIndexBasis'),
+        oiChange6h: findOpt('oiChange6h'),
+        impliedVolatility: findOpt('impliedVolatility'),
+      };
+
+      const p = regimeObj.parameters;
+      const regimeThresholds = [
+        `High-Volatility/Shock triggers when volZ >= ${p.volZHighThreshold}σ or CUSUM >= ${p.cusumThresholdH}σ`,
+        `Trending triggers when |trendStrength| >= ${p.trendStrengthThreshold}σ (and below shock thresholds)`,
+      ];
+
+      try {
+        const apiRes = await requestGeminiExplanation({
+          kind: 'regime_change',
+          targetId,
+          symbol: regimeObj.symbol,
+          timeframe: regimeObj.resolution,
+          previousRegime: transition.fromRegime,
+          currentRegime: transition.toRegime,
+          riskScore: transition.riskScore,
+          action: 'REGIME_CHANGE',
+          candleTimestamp: new Date(transition.time * 1000).toISOString(),
+          rulesFired: [],
+          thresholds: regimeThresholds,
+          inputs: snapshot,
+          unavailableOptionalInputs: buildUnavailableOptionalList(regimeObj),
+          forceRefresh,
+        });
+
+        const summary = toAlertExplanationSummary(apiRes);
+        setRegimeChangeExplanations((prev) => ({
+          ...prev,
+          [targetId]: {
+            targetId,
+            state: 'ready',
+            explanation: summary,
+            error: null,
+          },
+        }));
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : 'Failed to generate regime explanation';
+        const timestamp =
+          err instanceof ProxyRequestError ? err.timestamp : new Date().toISOString();
+        setRegimeChangeExplanations((prev) => ({
+          ...prev,
+          [targetId]: {
+            targetId,
+            state: 'error',
+            explanation: null,
+            error: { message, timestamp },
+          },
+        }));
+      }
+    },
+    [buildUnavailableOptionalList],
+  );
+
+  // Trigger Gemini explanation asynchronously for the latest regime transition (cached per transition ID)
+  useEffect(() => {
+    if (!explainStatus?.configured) return;
+    if (!phase2Regime || !phase2Regime.sufficientData || phase2Regime.transitions.length === 0) {
+      return;
+    }
+    const latest = phase2Regime.transitions[phase2Regime.transitions.length - 1];
+    const targetId = `regshift_${phase2Regime.symbol}_${phase2Regime.resolution}_${latest.time}`;
+    if (
+      !requestedTransitionExplainIdsRef.current.has(targetId) &&
+      !regimeChangeExplanations[targetId]
+    ) {
+      requestedTransitionExplainIdsRef.current.add(targetId);
+      void requestRegimeChangeExplanation(phase2Regime, latest, false);
+    }
+  }, [
+    explainStatus?.configured,
+    phase2Regime,
+    regimeChangeExplanations,
+    requestRegimeChangeExplanation,
+  ]);
+
+  const handleRetryAlertExplain = useCallback(
+    (alertId: string) => {
+      const target = guardrailAlertsRef.current.find((a) => a.id === alertId);
+      if (!target) return;
+      void requestAlertExplanation(target, true);
+    },
+    [requestAlertExplanation],
+  );
+
+  const handleRetryRegimeExplain = useCallback(
+    (transition: RegimeTransitionMarker) => {
+      if (!phase2RegimeRef.current) return;
+      void requestRegimeChangeExplanation(phase2RegimeRef.current, transition, true);
+    },
+    [requestRegimeChangeExplanation],
+  );
 
   const handleGoogleSignIn = useCallback(async () => {
     setAuthError(null);
@@ -835,6 +1123,9 @@ export default function App() {
 
       try {
         await saveGuardrailDecisionToFirestore(target, decision);
+        if (target.explanation) {
+          attachedFirestoreExplainIdsRef.current.add(alertId);
+        }
         setGuardrailAlerts((prev) =>
           prev.map((a) =>
             a.id === alertId ? { ...a, firestoreState: 'saved', firestoreError: null } : a,
@@ -1160,6 +1451,21 @@ export default function App() {
                             );
                           }
                         }}
+                        explainConfigured={explainStatus?.configured ?? false}
+                        explainDisabledReason={explainStatus?.reason ?? null}
+                        regimeChangeExplanation={(() => {
+                          if (
+                            !phase2Regime?.sufficientData ||
+                            phase2Regime.transitions.length === 0
+                          ) {
+                            return null;
+                          }
+                          const latest =
+                            phase2Regime.transitions[phase2Regime.transitions.length - 1];
+                          const tid = `regshift_${phase2Regime.symbol}_${phase2Regime.resolution}_${latest.time}`;
+                          return regimeChangeExplanations[tid] ?? null;
+                        })()}
+                        onRetryRegimeExplain={handleRetryRegimeExplain}
                       />
 
                       <GuardrailRulesPanel
@@ -1177,9 +1483,12 @@ export default function App() {
                         user={authUser}
                         authLoading={authLoading}
                         authError={authError}
+                        explainConfigured={explainStatus?.configured ?? false}
+                        explainDisabledReason={explainStatus?.reason ?? null}
                         onSignIn={() => void handleGoogleSignIn()}
                         onDecide={(id, dec) => void handleDecideGuardrailAlert(id, dec)}
                         onRetrySave={(id) => void handleRetrySaveGuardrailAlert(id)}
+                        onRetryExplain={handleRetryAlertExplain}
                       />
 
                       <DecisionLogPanel

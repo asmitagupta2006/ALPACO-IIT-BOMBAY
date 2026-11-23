@@ -527,6 +527,7 @@ export function reconcileAlertFeed(params: {
   existingAlerts: GuardrailAlert[];
   evaluation: GuardrailEvaluationResult;
   cooldownSeconds: number;
+  previousRegime?: Phase2RegimeLabel | null;
   nowMs?: number;
 }): {
   alerts: GuardrailAlert[];
@@ -629,6 +630,7 @@ export function reconcileAlertFeed(params: {
     signature,
     symbol,
     timeframe,
+    previousRegime: params.previousRegime ?? latestSameScope?.regime ?? null,
     regime: evaluation.inputs.regime,
     riskScore: evaluation.inputs.riskScore,
     action: evaluation.action,
@@ -645,6 +647,9 @@ export function reconcileAlertFeed(params: {
     decidedAt: null,
     firestoreState: 'not_saved',
     firestoreError: null,
+    explanationState: 'idle',
+    explanation: null,
+    explanationError: null,
   };
 
   return {

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { User } from 'firebase/auth';
-import { AlertCircle, Database, LogIn, RefreshCw } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Database, LogIn, RefreshCw, Sparkles } from 'lucide-react';
 import type { FirestoreDecisionRecord } from '../contracts/guardrails';
 import { formatDateTimeUtc, formatTimestamp } from '../utils/format';
 
@@ -192,13 +192,44 @@ export function DecisionLogPanel({
                         {rec.action}
                       </span>
                     </td>
-                    <td className="px-3.5 py-2.5 space-y-1">
+                    <td className="px-3.5 py-2.5 space-y-1.5">
                       <div className="font-medium text-slate-200">
                         {rec.rulesFired.join(', ')}
                       </div>
                       <div className="font-mono text-[11px] text-slate-400">
                         {rec.thresholds.join(' | ')}
                       </div>
+                      {rec.explanation && (
+                        <div className="mt-1.5 rounded border border-slate-800 bg-[#111A2E]/90 p-2.5 text-[11px] space-y-1.5">
+                          <div className="flex flex-wrap items-center justify-between gap-2 text-slate-300">
+                            <span className="inline-flex items-center gap-1 font-medium text-sky-300">
+                              <Sparkles className="h-3 w-3" aria-hidden="true" />
+                              <span>Saved Explanation</span>
+                              {rec.explanation.status === 'unverified' && (
+                                <span className="inline-flex items-center gap-0.5 rounded border border-amber-500/45 bg-amber-950/35 px-1.5 py-0.5 font-mono text-[10px] text-amber-200">
+                                  <AlertTriangle className="h-2.5 w-2.5" aria-hidden="true" />
+                                  <span>Unverified</span>
+                                </span>
+                              )}
+                            </span>
+                            <span className="text-[10px] text-slate-400">
+                              AI-generated explanation. Decisions come from the rules, not the model.
+                            </span>
+                          </div>
+                          <p className="text-slate-200 leading-relaxed">{rec.explanation.summary}</p>
+                          {rec.explanation.whyItFired.length > 0 && (
+                            <ul className="list-disc pl-4 space-y-0.5 text-slate-400">
+                              {rec.explanation.whyItFired.map((pt, idx) => (
+                                <li key={idx}>{pt}</li>
+                              ))}
+                            </ul>
+                          )}
+                          <div className="font-mono text-[10px] text-slate-400 tabular-nums">
+                            Source: Gemini ({rec.explanation.model}), generated{' '}
+                            {formatTimestamp(rec.explanation.generatedAt)}
+                          </div>
+                        </div>
+                      )}
                     </td>
                     <td className="px-3.5 py-2.5 font-mono text-[11px] text-slate-300 tabular-nums">
                       <div>

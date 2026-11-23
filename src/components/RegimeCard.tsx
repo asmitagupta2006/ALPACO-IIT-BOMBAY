@@ -1,6 +1,22 @@
-import { AlertCircle, AlertTriangle, RefreshCw } from 'lucide-react';
-import type { Phase2RegimeLabel, Phase2RegimeResponse } from '../contracts/regime';
+import { AlertCircle, AlertTriangle, GitCommitHorizontal, RefreshCw } from 'lucide-react';
+import type {
+  AlertExplanationState,
+  AlertExplanationSummary,
+} from '../contracts/guardrails';
+import type {
+  Phase2RegimeLabel,
+  Phase2RegimeResponse,
+  RegimeTransitionMarker,
+} from '../contracts/regime';
 import { formatTimestamp } from '../utils/format';
+import { ExplanationBox } from './ExplanationBox';
+
+export interface RegimeChangeExplanationEntry {
+  targetId: string;
+  state: AlertExplanationState;
+  explanation: AlertExplanationSummary | null;
+  error: { message: string; timestamp: string } | null;
+}
 
 interface RegimeCardProps {
   symbol: string | null;
@@ -9,6 +25,10 @@ interface RegimeCardProps {
   error: { message: string; timestamp: string } | null;
   fetchedAt: string | null;
   onRetry: () => void;
+  explainConfigured?: boolean;
+  explainDisabledReason?: string | null;
+  regimeChangeExplanation?: RegimeChangeExplanationEntry | null;
+  onRetryRegimeExplain?: (transition: RegimeTransitionMarker) => void;
 }
 
 function regimeBadgeClasses(label: Phase2RegimeLabel): string {
@@ -35,12 +55,20 @@ export function RegimeCard({
   error,
   fetchedAt,
   onRetry,
+  explainConfigured = false,
+  explainDisabledReason = null,
+  regimeChangeExplanation = null,
+  onRetryRegimeExplain,
 }: RegimeCardProps) {
   if (!symbol) {
     return null;
   }
 
   const lastUpdatedIso = fetchedAt ?? regime?.computedAt ?? null;
+  const latestTransition =
+    regime && regime.sufficientData && regime.transitions.length > 0
+      ? regime.transitions[regime.transitions.length - 1]
+      : null;
 
   return (
     <section
@@ -242,6 +270,38 @@ export function RegimeCard({
                 {regime.parameters.cusumDriftK}σ / H={regime.parameters.cusumThresholdH}σ
               </span>
             </div>
+
+            {/* Phase 4: Latest Regime Change Explanation */}
+            {latestTransition && (
+              <div className="space-y-2 rounded-md border border-slate-800/80 bg-[#0B1120] p-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2 font-medium text-slate-200">
+                    <GitCommitHorizontal className="h-4 w-4 text-sky-400" aria-hidden="true" />
+                    <span>
+                      Latest Regime Change: {latestTransition.fromRegime} →{' '}
+                      {latestTransition.toRegime}
+                    </span>
+                  </div>
+                  <span className="font-mono text-[11px] text-slate-400 tabular-nums">
+                    At {formatTimestamp(new Date(latestTransition.time * 1000).toISOString())} · Score{' '}
+                    {latestTransition.riskScore.toFixed(1)}
+                  </span>
+                </div>
+                <ExplanationBox
+                  title="Regime Change Explanation"
+                  configured={explainConfigured}
+                  disabledReason={explainDisabledReason}
+                  state={regimeChangeExplanation?.state ?? 'idle'}
+                  explanation={regimeChangeExplanation?.explanation ?? null}
+                  error={regimeChangeExplanation?.error ?? null}
+                  onRetry={
+                    onRetryRegimeExplain
+                      ? () => onRetryRegimeExplain(latestTransition)
+                      : undefined
+                  }
+                />
+              </div>
+            )}
           </>
         )}
 

@@ -10,15 +10,19 @@ import {
 } from 'lucide-react';
 import type { AlertDecision, GuardrailAlert } from '../contracts/guardrails';
 import { formatTimestamp } from '../utils/format';
+import { ExplanationBox } from './ExplanationBox';
 
 interface GuardrailAlertFeedProps {
   alerts: GuardrailAlert[];
   user: User | null;
   authLoading: boolean;
   authError: string | null;
+  explainConfigured: boolean;
+  explainDisabledReason: string | null;
   onSignIn: () => void;
   onDecide: (alertId: string, decision: AlertDecision) => void;
   onRetrySave: (alertId: string) => void;
+  onRetryExplain: (alertId: string) => void;
 }
 
 function statusBadge(alert: GuardrailAlert): { label: string; className: string } {
@@ -51,9 +55,12 @@ export function GuardrailAlertFeed({
   user,
   authLoading,
   authError,
+  explainConfigured,
+  explainDisabledReason,
   onSignIn,
   onDecide,
   onRetrySave,
+  onRetryExplain,
 }: GuardrailAlertFeedProps) {
   const pendingCount = alerts.filter((a) => a.status === 'pending').length;
 
@@ -203,6 +210,17 @@ export function GuardrailAlertFeed({
                       <span>IV: {alert.inputValues.impliedVolatility.toFixed(2)}%</span>
                     )}
                   </div>
+
+                  {/* Phase 4: Gemini Explanation Box */}
+                  <ExplanationBox
+                    title="Guardrail Alert Explanation"
+                    configured={explainConfigured}
+                    disabledReason={explainDisabledReason}
+                    state={alert.explanationState}
+                    explanation={alert.explanation}
+                    error={alert.explanationError}
+                    onRetry={() => onRetryExplain(alert.id)}
+                  />
 
                   {/* Decision Actions or Final State */}
                   <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80 pt-2.5">

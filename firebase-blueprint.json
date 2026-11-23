@@ -69,6 +69,10 @@
           "description": "ISO timestamp of the latest candle used in the regime evaluation.",
           "minLength": 1,
           "maxLength": 40
+        },
+        "explanation": {
+          "type": "object",
+          "description": "Optional Phase 4 Gemini explanation snapshot (text, model, generatedAt, recordedAt, status, summary, whyItFired, limitations) written once at decision time or appended once after generation."
         }
       },
       "required": [

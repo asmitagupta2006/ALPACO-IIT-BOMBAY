@@ -7,12 +7,15 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  updateDoc,
   where,
   type QueryDocumentSnapshot,
 } from 'firebase/firestore';
 import type {
   AlertDecision,
+  AlertExplanationSummary,
   FirestoreDecisionRecord,
+  FirestoreExplanationData,
   GuardrailAlert,
 } from '../contracts/guardrails';
 import {
@@ -46,6 +49,24 @@ function toIsoStringOrNull(val: unknown): string | null {
   return null;
 }
 
+function mapExplanation(raw: unknown): FirestoreExplanationData | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const e = raw as Record<string, unknown>;
+  if (typeof e.text !== 'string' || typeof e.model !== 'string' || typeof e.generatedAt !== 'string') {
+    return null;
+  }
+  return {
+    text: e.text,
+    model: e.model,
+    generatedAt: e.generatedAt,
+    recordedAt: toIsoStringOrNull(e.recordedAt),
+    status: e.status === 'unverified' ? 'unverified' : 'verified',
+    summary: typeof e.summary === 'string' ? e.summary : e.text,
+    whyItFired: Array.isArray(e.whyItFired) ? e.whyItFired.map(String) : [],
+    limitations: Array.isArray(e.limitations) ? e.limitations.map(String) : [],
+  };
+}
+
 function mapSnapshotDoc(snap: QueryDocumentSnapshot): FirestoreDecisionRecord {
   const d = snap.data();
   return {
@@ -74,6 +95,7 @@ function mapSnapshotDoc(snap: QueryDocumentSnapshot): FirestoreDecisionRecord {
     createdAt: toIsoStringOrNull(d.createdAt),
     decidedAt: toIsoStringOrNull(d.decidedAt),
     candleTimestamp: typeof d.candleTimestamp === 'string' ? d.candleTimestamp : '',
+    explanation: mapExplanation(d.explanation),
   };
 }
 
@@ -83,6 +105,29 @@ function sortNewestFirst(records: FirestoreDecisionRecord[]): FirestoreDecisionR
     const tb = b.decidedAt ?? b.createdAt ?? '';
     return tb.localeCompare(ta);
   });
+}
+
+function buildSanitizedExplanationPayload(exp: AlertExplanationSummary) {
+  const whyList =
+    exp.whyItFired.length > 0
+      ? exp.whyItFired.slice(0, 10).map((s) => sanitizeString(s, 400, 'Rule threshold met.'))
+      : [sanitizeString(exp.summary, 400, 'Rule threshold met.')];
+
+  const limList = exp.limitations
+    .slice(0, 10)
+    .map((s) => sanitizeString(s, 400, ''))
+    .filter((s) => s.length > 0);
+
+  return {
+    text: sanitizeString(exp.text, 4000, sanitizeString(exp.summary, 1000, 'Explanation recorded.')),
+    model: sanitizeString(exp.modelName, 100, 'gemini'),
+    generatedAt: sanitizeString(exp.generatedAt, 40, new Date().toISOString()),
+    recordedAt: serverTimestamp(),
+    status: exp.status === 'unverified' ? 'unverified' : 'verified',
+    summary: sanitizeString(exp.summary, 1000, 'Explanation summary recorded.'),
+    whyItFired: whyList,
+    limitations: limList,
+  };
 }
 
 function buildSanitizedPayload(uid: string, alert: GuardrailAlert, decision: AlertDecision) {
@@ -133,12 +178,13 @@ function buildSanitizedPayload(uid: string, alert: GuardrailAlert, decision: Ale
     decision,
     decidedAt: serverTimestamp(),
     candleTimestamp: sanitizeString(alert.candleTimestamp, 40, new Date().toISOString()),
+    explanation: alert.explanation ? buildSanitizedExplanationPayload(alert.explanation) : null,
   };
 }
 
 /**
- * Persists a single user decision to users/{uid}/decisions/{decisionId}.
- * Intentionally omits `explanation` (reserved for Phase 4) and all PII.
+ * Persists a single user decision (and optional Gemini explanation if already generated)
+ * to users/{uid}/decisions/{decisionId}. No PII stored.
  */
 export async function saveGuardrailDecisionToFirestore(
   alert: GuardrailAlert,
@@ -157,6 +203,30 @@ export async function saveGuardrailDecisionToFirestore(
     await setDoc(doc(db, 'users', user.uid, 'decisions', docId), payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+/**
+ * Appends a Gemini explanation once onto an already-saved decision document.
+ * Allowed by firestore.rules ONLY when existing().explanation == null and no other field changes.
+ */
+export async function attachExplanationToFirestoreDecision(
+  alertId: string,
+  explanation: AlertExplanationSummary,
+): Promise<void> {
+  const user = auth.currentUser;
+  if (!user) return;
+
+  const docId = sanitizeId(alertId);
+  const path = `users/${user.uid}/decisions/${docId}`;
+  const payload = buildSanitizedExplanationPayload(explanation);
+
+  try {
+    await updateDoc(doc(db, 'users', user.uid, 'decisions', docId), {
+      explanation: payload,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, path);
   }
 }
 

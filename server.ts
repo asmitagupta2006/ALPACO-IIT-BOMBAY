@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createAlpacaRouter } from './server/routes/alpaca.ts';
 import { createDeltaRouter } from './server/routes/delta.ts';
+import { createExplainRouter } from './server/routes/explain.ts';
 import { createSentinelRouter } from './server/routes/sentinel.ts';
 import { ensureSentinelInitialized } from './server/sentinelEngine.ts';
 
@@ -20,6 +21,8 @@ async function startServer(): Promise<void> {
 
   // Public read-only Delta Exchange India proxy routes
   app.use('/api', createDeltaRouter());
+  // Phase 4 server-side Gemini explanation routes
+  app.use('/api', createExplainRouter());
   // Optional read-only Alpaca Market Data proxy routes
   app.use('/api/alpaca', createAlpacaRouter());
   // Regime Sentinel ML, safety guardrails, paper trading & audit API

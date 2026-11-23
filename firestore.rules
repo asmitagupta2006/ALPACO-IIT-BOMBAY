@@ -75,6 +75,62 @@ service cloud.firestore {
         && isOptionalNumber(iv.impliedVolatility);
     }
 
+    function isValidExplanation(exp) {
+      return exp is map
+        && exp.keys().hasAll([
+          'text',
+          'model',
+          'generatedAt',
+          'recordedAt',
+          'status',
+          'summary',
+          'whyItFired',
+          'limitations'
+        ])
+        && exp.keys().hasOnly([
+          'text',
+          'model',
+          'generatedAt',
+          'recordedAt',
+          'status',
+          'summary',
+          'whyItFired',
+          'limitations'
+        ])
+        && exp.text is string
+        && exp.text.size() >= 1
+        && exp.text.size() <= 4000
+        && exp.model is string
+        && exp.model.size() >= 1
+        && exp.model.size() <= 100
+        && exp.generatedAt is string
+        && exp.generatedAt.size() >= 10
+        && exp.generatedAt.size() <= 40
+        && exp.recordedAt is timestamp
+        && exp.status is string
+        && exp.status.size() <= 16
+        && exp.status in ['verified', 'unverified']
+        && exp.summary is string
+        && exp.summary.size() >= 1
+        && exp.summary.size() <= 1000
+        && exp.whyItFired is list
+        && exp.whyItFired.size() >= 1
+        && exp.whyItFired.size() <= 10
+        && exp.whyItFired[0] is string
+        && exp.whyItFired[0].size() >= 1
+        && exp.whyItFired[0].size() <= 400
+        && exp.limitations is list
+        && exp.limitations.size() <= 10
+        && (
+          exp.limitations.size() == 0
+          || (
+            exp.limitations[0] is string
+            && exp.limitations[0].size() >= 1
+            && exp.limitations[0].size() <= 400
+          )
+        );
+    }
+
     function isValidDecision(data) {
       return data.keys().hasAll([
           'uid',
@@ -104,7 +160,8 @@ service cloud.firestore {
           'action',
           'decision',
           'decidedAt',
-          'candleTimestamp'
+          'candleTimestamp',
+          'explanation'
         ])
         && data.uid is string
         && data.uid.size() >= 1
@@ -144,7 +201,8 @@ service cloud.firestore {
         && (data.decidedAt == null || data.decidedAt is timestamp)
         && data.candleTimestamp is string
         && data.candleTimestamp.size() >= 1
-        && data.candleTimestamp.size() <= 40;
+        && data.candleTimestamp.size() <= 40
+        && (!('explanation' in data) || data.explanation == null || isValidExplanation(data.explanation));
     }
 
     match /users/{userId}/decisions/{decisionId} {
@@ -162,27 +220,58 @@ service cloud.firestore {
         && (
           (incoming().decision == null && incoming().decidedAt == null)
           || (incoming().decision in ['approved', 'dismissed'] && incoming().decidedAt == request.time)
+        )
+        && (
+          !('explanation' in incoming())
+          || incoming().explanation == null
+          || incoming().explanation.recordedAt == request.time
         );
 
       allow update: if isValidId(decisionId)
         && isVerifiedOwner(userId)
         && isValidDecision(incoming())
         && existing().uid == request.auth.uid
-        && existing().decision == null
-        && incoming().decision in ['approved', 'dismissed']
-        && incoming().decidedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['decision', 'decidedAt'])
-        && incoming().uid == existing().uid
-        && incoming().createdAt == existing().createdAt
-        && incoming().symbol == existing().symbol
-        && incoming().timeframe == existing().timeframe
-        && incoming().regime == existing().regime
-        && incoming().riskScore == existing().riskScore
-        && incoming().inputValues == existing().inputValues
-        && incoming().rulesFired == existing().rulesFired
-        && incoming().thresholds == existing().thresholds
-        && incoming().action == existing().action
-        && incoming().candleTimestamp == existing().candleTimestamp;
+        && (
+          (
+            // Action 1: Decide once on a pending decision record
+            existing().decision == null
+            && incoming().decision in ['approved', 'dismissed']
+            && incoming().decidedAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly(['decision', 'decidedAt'])
+            && incoming().uid == existing().uid
+            && incoming().createdAt == existing().createdAt
+            && incoming().symbol == existing().symbol
+            && incoming().timeframe == existing().timeframe
+            && incoming().regime == existing().regime
+            && incoming().riskScore == existing().riskScore
+            && incoming().inputValues == existing().inputValues
+            && incoming().rulesFired == existing().rulesFired
+            && incoming().thresholds == existing().thresholds
+            && incoming().action == existing().action
+            && incoming().candleTimestamp == existing().candleTimestamp
+          )
+          || (
+            // Action 2: Attach Gemini explanation once (no edits to any other field)
+            (!('explanation' in existing()) || existing().explanation == null)
+            && ('explanation' in incoming())
+            && incoming().explanation != null
+            && incoming().explanation.recordedAt == request.time
+            && incoming().diff(existing()).affectedKeys().hasOnly(['explanation'])
+            && incoming().uid == existing().uid
+            && incoming().createdAt == existing().createdAt
+            && incoming().symbol == existing().symbol
+            && incoming().timeframe == existing().timeframe
+            && incoming().regime == existing().regime
+            && incoming().riskScore == existing().riskScore
+            && incoming().inputValues == existing().inputValues
+            && incoming().rulesFired == existing().rulesFired
+            && incoming().thresholds == existing().thresholds
+            && incoming().action == existing().action
+            && incoming().decision == existing().decision
+            && incoming().decidedAt == existing().decidedAt
+            && incoming().candleTimestamp == existing().candleTimestamp
+          )
+        );
 
       allow delete: if false;
     }

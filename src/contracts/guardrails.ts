@@ -92,11 +92,38 @@ export interface GuardrailEvaluationResult {
 export type AlertDecision = 'approved' | 'dismissed';
 export type AlertLifecycleStatus = 'pending' | AlertDecision | 'superseded';
 
+export type AlertExplanationState = 'idle' | 'loading' | 'ready' | 'error';
+
+export interface AlertExplanationSummary {
+  modelName: string;
+  generatedAt: string;
+  status: 'verified' | 'unverified';
+  warnings: string[];
+  summary: string;
+  whyItFired: string[];
+  keyNumbers: Array<{ name: string; value: string }>;
+  limitations: string[];
+  text: string;
+  disclaimer: string;
+}
+
+export interface FirestoreExplanationData {
+  text: string;
+  model: string;
+  generatedAt: string;
+  recordedAt: string | null;
+  status: 'verified' | 'unverified';
+  summary: string;
+  whyItFired: string[];
+  limitations: string[];
+}
+
 export interface GuardrailAlert {
   id: string;
   signature: string;
   symbol: string;
   timeframe: CandleResolution;
+  previousRegime: Phase2RegimeLabel | null;
   regime: Phase2RegimeLabel;
   riskScore: number;
   action: Exclude<GuardrailAction, 'CONTINUE'>;
@@ -113,6 +140,9 @@ export interface GuardrailAlert {
   decidedAt: string | null;
   firestoreState: 'not_saved' | 'saving' | 'saved' | 'error';
   firestoreError: string | null;
+  explanationState: AlertExplanationState;
+  explanation: AlertExplanationSummary | null;
+  explanationError: { message: string; timestamp: string } | null;
 }
 
 export interface FirestoreDecisionRecord {
@@ -130,4 +160,5 @@ export interface FirestoreDecisionRecord {
   createdAt: string | null;
   decidedAt: string | null;
   candleTimestamp: string;
+  explanation: FirestoreExplanationData | null;
 }
