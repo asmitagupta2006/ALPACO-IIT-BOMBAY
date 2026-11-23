@@ -380,12 +380,30 @@ export async function fetchTickerSnapshot(symbol: string): Promise<{
     throw new DeltaApiError(`No ticker data returned for symbol ${symbol}`, 404, 'TICKER_NOT_FOUND');
   }
 
-  logShapeOnce('REST /v2/tickers/:symbol', json.result);
+  const contractTypeLabel =
+    typeof json.result.contract_type === 'string' ? json.result.contract_type : 'unknown';
+  logShapeOnce(`REST /v2/tickers/:symbol (${contractTypeLabel})`, json.result);
   const ticker = normalizeTickerRecord(json.result, symbol);
   return {
     ticker,
     fetchedAt: ticker.fetchedAtIso,
   };
+}
+
+function getResSeconds(res: CandleResolution): number {
+  switch (res) {
+    case '1m': return 60;
+    case '3m': return 180;
+    case '5m': return 300;
+    case '15m': return 900;
+    case '30m': return 1800;
+    case '1h': return 3600;
+    case '2h': return 7200;
+    case '4h': return 14400;
+    case '6h': return 21600;
+    case '1d': return 86400;
+    default: return 900;
+  }
 }
 
 export async function fetchCandlesHistory(params: {
@@ -400,7 +418,10 @@ export async function fetchCandlesHistory(params: {
   fetchedAt: string;
 }> {
   const querySymbol = params.basis === 'mark' ? `MARK:${params.symbol}` : params.symbol;
-  const cacheKey = `${querySymbol}:${params.resolution}:${params.start}:${params.end}`;
+  const stepSec = getResSeconds(params.resolution);
+  const alignedStart = Math.floor(params.start / stepSec) * stepSec;
+  const alignedEnd = Math.floor(params.end / stepSec) * stepSec;
+  const cacheKey = `${querySymbol}:${params.resolution}:${alignedStart}:${alignedEnd}`;
 
   const cached = candlesCache.get(cacheKey);
   if (cached) {
@@ -411,49 +432,60 @@ export async function fetchCandlesHistory(params: {
     };
   }
 
-  const qs = new URLSearchParams({
-    symbol: querySymbol,
-    resolution: params.resolution,
-    start: String(params.start),
-    end: String(params.end),
-  });
-
-  const json = await fetchDeltaJson<{ result?: Array<Record<string, unknown>> }>(
-    `/v2/history/candles?${qs.toString()}`,
-  );
-
-  const rawRows = Array.isArray(json.result) ? json.result : [];
-  if (rawRows.length > 0) {
-    logShapeOnce('REST /v2/history/candles[0]', rawRows[0]);
-  }
-
+  const maxBarsPerChunk = 1800;
+  const chunkSpanSec = maxBarsPerChunk * stepSec;
   const byTime = new Map<number, DeltaCandle>();
-  for (const row of rawRows) {
-    const time = toNullableNumber(row.time);
-    const open = toNullableNumber(row.open);
-    const high = toNullableNumber(row.high);
-    const low = toNullableNumber(row.low);
-    const close = toNullableNumber(row.close);
-    const volume = toNullableNumber(row.volume) ?? 0;
 
-    if (
-      time === null ||
-      open === null ||
-      high === null ||
-      low === null ||
-      close === null
-    ) {
-      continue;
+  let cursor = params.start;
+  let chunks = 0;
+  while (cursor < params.end && chunks < 6) {
+    const chunkEnd = Math.min(params.end, cursor + chunkSpanSec);
+    const qs = new URLSearchParams({
+      symbol: querySymbol,
+      resolution: params.resolution,
+      start: String(cursor),
+      end: String(chunkEnd),
+    });
+
+    const json = await fetchDeltaJson<{ result?: Array<Record<string, unknown>> }>(
+      `/v2/history/candles?${qs.toString()}`,
+    );
+
+    const rawRows = Array.isArray(json.result) ? json.result : [];
+    if (chunks === 0 && rawRows.length > 0) {
+      logShapeOnce('REST /v2/history/candles[0]', rawRows[0]);
     }
 
-    byTime.set(Math.floor(time), {
-      time: Math.floor(time),
-      open,
-      high,
-      low,
-      close,
-      volume,
-    });
+    for (const row of rawRows) {
+      const time = toNullableNumber(row.time);
+      const open = toNullableNumber(row.open);
+      const high = toNullableNumber(row.high);
+      const low = toNullableNumber(row.low);
+      const close = toNullableNumber(row.close);
+      const volume = toNullableNumber(row.volume) ?? 0;
+
+      if (
+        time === null ||
+        open === null ||
+        high === null ||
+        low === null ||
+        close === null
+      ) {
+        continue;
+      }
+
+      byTime.set(Math.floor(time), {
+        time: Math.floor(time),
+        open,
+        high,
+        low,
+        close,
+        volume,
+      });
+    }
+
+    cursor = chunkEnd + stepSec;
+    chunks += 1;
   }
 
   const candles = Array.from(byTime.values()).sort((a, b) => a.time - b.time);

@@ -31,7 +31,13 @@ class DeltaStreamManager {
   private activeTickerSymbols = new Set<string>();
   private activeCandleSubscriptions = new Set<string>(); // `${resolution}|${querySymbol}`
 
+  private teardownTimer: NodeJS.Timeout | null = null;
+
   addSubscriber(sub: StreamSubscriber): () => void {
+    if (this.teardownTimer) {
+      clearTimeout(this.teardownTimer);
+      this.teardownTimer = null;
+    }
     this.subscribers.set(sub.id, sub);
     this.ensureConnected();
     this.syncSubscriptions();
@@ -45,8 +51,13 @@ class DeltaStreamManager {
     return () => {
       this.subscribers.delete(sub.id);
       this.syncSubscriptions();
-      if (this.subscribers.size === 0) {
-        this.teardown();
+      if (this.subscribers.size === 0 && !this.teardownTimer) {
+        this.teardownTimer = setTimeout(() => {
+          this.teardownTimer = null;
+          if (this.subscribers.size === 0) {
+            this.teardown();
+          }
+        }, 8_000);
       }
     };
   }

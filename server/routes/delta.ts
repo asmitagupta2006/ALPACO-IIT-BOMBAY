@@ -10,6 +10,8 @@ import {
   getClientTelemetry,
 } from '../deltaClient.ts';
 import { deltaStreamManager } from '../deltaStream.ts';
+import { detectMarketRegime } from '../regime/classifier.ts';
+import { resolutionToSeconds } from '../regime/math.ts';
 import {
   ALLOWED_RESOLUTIONS,
   type ApiEnvelope,
@@ -19,6 +21,7 @@ import {
   type DeltaStreamEvent,
   type HealthStatusResponse,
 } from '../../src/contracts/delta.ts';
+import type { Phase2RegimeResponse } from '../../src/contracts/regime.ts';
 
 const SYMBOL_REGEX = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -228,6 +231,119 @@ export function createDeltaRouter(): Router {
         502,
         'CANDLES_FETCH_FAILED',
         err instanceof Error ? err.message : 'Failed to load historical candles',
+      );
+    }
+  });
+
+  router.get('/delta/regime', async (req: Request, res: Response) => {
+    const symbol = typeof req.query.symbol === 'string' ? req.query.symbol.trim() : '';
+    const resolutionRaw =
+      typeof req.query.resolution === 'string' ? req.query.resolution.trim() : '15m';
+    const basisRaw = typeof req.query.basis === 'string' ? req.query.basis.trim() : 'trade';
+    const startRaw = typeof req.query.start === 'string' ? Number(req.query.start) : NaN;
+    const endRaw = typeof req.query.end === 'string' ? Number(req.query.end) : NaN;
+
+    if (!SYMBOL_REGEX.test(symbol)) {
+      sendError(res, 400, 'INVALID_SYMBOL', 'Invalid or missing symbol parameter', 'Server Validator');
+      return;
+    }
+    if (!isAllowedResolution(resolutionRaw)) {
+      sendError(
+        res,
+        400,
+        'INVALID_RESOLUTION',
+        `Unsupported resolution "${resolutionRaw}". Allowed: ${ALLOWED_RESOLUTIONS.join(', ')}`,
+        'Server Validator',
+      );
+      return;
+    }
+    if (basisRaw !== 'trade' && basisRaw !== 'mark') {
+      sendError(
+        res,
+        400,
+        'INVALID_BASIS',
+        'basis must be either "trade" or "mark"',
+        'Server Validator',
+      );
+      return;
+    }
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const stepSec = resolutionToSeconds(resolutionRaw);
+    const end = Number.isFinite(endRaw) && endRaw > 0 ? Math.floor(endRaw) : nowSec;
+    const start =
+      Number.isFinite(startRaw) && startRaw > 0
+        ? Math.floor(startRaw)
+        : end - Math.max(86_400, 120 * stepSec);
+
+    if (start >= end) {
+      sendError(
+        res,
+        400,
+        'INVALID_TIME_RANGE',
+        'start timestamp must be strictly earlier than end timestamp',
+        'Server Validator',
+      );
+      return;
+    }
+
+    try {
+      const [candlesRes, tickerRes] = await Promise.allSettled([
+        fetchCandlesHistory({
+          symbol,
+          resolution: resolutionRaw,
+          start,
+          end,
+          basis: basisRaw as CandlePriceBasis,
+        }),
+        fetchTickerSnapshot(symbol),
+      ]);
+
+      if (candlesRes.status === 'rejected') {
+        const err = candlesRes.reason;
+        if (err instanceof DeltaApiError) {
+          sendError(res, err.status, err.code, err.message);
+          return;
+        }
+        sendError(
+          res,
+          502,
+          'REGIME_CANDLES_FAILED',
+          err instanceof Error ? err.message : 'Failed to load candles for regime detection',
+        );
+        return;
+      }
+
+      const ticker = tickerRes.status === 'fulfilled' ? tickerRes.value.ticker : null;
+      const tickerError =
+        tickerRes.status === 'rejected'
+          ? tickerRes.reason instanceof Error
+            ? tickerRes.reason.message
+            : 'Ticker fetch failed'
+          : null;
+
+      const regimePayload = detectMarketRegime({
+        symbol,
+        resolution: resolutionRaw,
+        basis: basisRaw as CandlePriceBasis,
+        candles: candlesRes.value.payload.candles,
+        ticker,
+        tickerError,
+      });
+
+      const envelope: ApiEnvelope<Phase2RegimeResponse> = {
+        data: regimePayload,
+        source: `Source: Delta candles (${candlesRes.value.payload.querySymbol})`,
+        fetchedAt: candlesRes.value.fetchedAt,
+        cached: candlesRes.value.cached,
+      };
+      res.json(envelope);
+    } catch (err) {
+      sendError(
+        res,
+        502,
+        'REGIME_ENGINE_FAILED',
+        err instanceof Error ? err.message : 'Failed to compute regime detection',
       );
     }
   });

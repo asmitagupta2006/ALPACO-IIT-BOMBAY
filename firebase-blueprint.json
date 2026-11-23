@@ -1,0 +1,99 @@
+{
+  "entities": {
+    "GuardrailDecision": {
+      "title": "GuardrailDecision",
+      "description": "Immutable-after-decision log record of a human operator approving or dismissing a deterministic guardrail recommendation for a Delta instrument.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Owner Firebase Auth UID matching request.auth.uid.",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the decision document was created."
+        },
+        "symbol": {
+          "type": "string",
+          "description": "Delta instrument symbol.",
+          "minLength": 1,
+          "maxLength": 40,
+          "pattern": "^[A-Za-z0-9_.\\-/]+$"
+        },
+        "timeframe": {
+          "type": "string",
+          "description": "Candle resolution evaluated.",
+          "enum": ["1m", "5m", "15m", "1h", "4h", "1d"]
+        },
+        "regime": {
+          "type": "string",
+          "description": "Phase 2 market regime label at evaluation time.",
+          "enum": ["Calm/Range", "Trending", "High-Volatility/Shock"]
+        },
+        "riskScore": {
+          "type": "number",
+          "description": "Phase 2 0-100 regime risk score."
+        },
+        "inputValues": {
+          "type": "object",
+          "description": "Exact regime metric inputs observed when the rule fired."
+        },
+        "rulesFired": {
+          "type": "array",
+          "description": "List of user-defined guardrail rules that fired."
+        },
+        "thresholds": {
+          "type": "array",
+          "description": "Exact threshold comparisons evaluated for each fired rule."
+        },
+        "action": {
+          "type": "string",
+          "description": "Deterministic guardrail recommendation.",
+          "enum": ["CONTINUE", "REDUCE SIZE", "PAUSE"]
+        },
+        "decision": {
+          "type": "string",
+          "description": "Human operator decision (or null if pending before single decision update).",
+          "enum": ["approved", "dismissed"]
+        },
+        "decidedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the operator approved or dismissed the alert."
+        },
+        "candleTimestamp": {
+          "type": "string",
+          "description": "ISO timestamp of the latest candle used in the regime evaluation.",
+          "minLength": 1,
+          "maxLength": 40
+        }
+      },
+      "required": [
+        "uid",
+        "createdAt",
+        "symbol",
+        "timeframe",
+        "regime",
+        "riskScore",
+        "inputValues",
+        "rulesFired",
+        "thresholds",
+        "action",
+        "decision",
+        "decidedAt",
+        "candleTimestamp"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/decisions/{decisionId}": {
+      "schema": {
+        "$ref": "#/entities/GuardrailDecision"
+      },
+      "description": "Private user-scoped guardrail decision audit log. Only the owning authenticated user can read and create records, with at most one write setting decision/decidedAt if initially pending, and no deletes."
+    }
+  }
+}

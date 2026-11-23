@@ -1,0 +1,190 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default deny catch-all (no public reads or writes anywhere)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedOwner(userId) {
+      return isSignedIn()
+        && request.auth.uid == userId
+        && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string
+        && id.size() >= 1
+        && id.size() <= 128
+        && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOptionalNumber(val) {
+      return val == null || val is number;
+    }
+
+    function isValidInputValues(iv) {
+      return iv is map
+        && iv.keys().hasAll([
+          'regime',
+          'riskScore',
+          'volZScore',
+          'trendStrength',
+          'cusumMax',
+          'fundingRate',
+          'markIndexBasis',
+          'oiChange6h',
+          'impliedVolatility'
+        ])
+        && iv.keys().hasOnly([
+          'regime',
+          'riskScore',
+          'volZScore',
+          'trendStrength',
+          'cusumMax',
+          'fundingRate',
+          'markIndexBasis',
+          'oiChange6h',
+          'impliedVolatility'
+        ])
+        && iv.regime is string
+        && iv.regime.size() <= 32
+        && iv.regime in ['Calm/Range', 'Trending', 'High-Volatility/Shock']
+        && iv.riskScore is number
+        && iv.riskScore >= 0
+        && iv.riskScore <= 100
+        && isOptionalNumber(iv.volZScore)
+        && isOptionalNumber(iv.trendStrength)
+        && isOptionalNumber(iv.cusumMax)
+        && isOptionalNumber(iv.fundingRate)
+        && isOptionalNumber(iv.markIndexBasis)
+        && isOptionalNumber(iv.oiChange6h)
+        && isOptionalNumber(iv.impliedVolatility);
+    }
+
+    function isValidDecision(data) {
+      return data.keys().hasAll([
+          'uid',
+          'createdAt',
+          'symbol',
+          'timeframe',
+          'regime',
+          'riskScore',
+          'inputValues',
+          'rulesFired',
+          'thresholds',
+          'action',
+          'decision',
+          'decidedAt',
+          'candleTimestamp'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'createdAt',
+          'symbol',
+          'timeframe',
+          'regime',
+          'riskScore',
+          'inputValues',
+          'rulesFired',
+          'thresholds',
+          'action',
+          'decision',
+          'decidedAt',
+          'candleTimestamp'
+        ])
+        && data.uid is string
+        && data.uid.size() >= 1
+        && data.uid.size() <= 128
+        && data.uid == request.auth.uid
+        && data.createdAt is timestamp
+        && data.symbol is string
+        && data.symbol.size() >= 1
+        && data.symbol.size() <= 40
+        && data.symbol.matches('^[A-Za-z0-9_.\\-/]+$')
+        && data.timeframe is string
+        && data.timeframe.size() <= 8
+        && data.timeframe in ['1m', '5m', '15m', '1h', '4h', '1d']
+        && data.regime is string
+        && data.regime.size() <= 32
+        && data.regime in ['Calm/Range', 'Trending', 'High-Volatility/Shock']
+        && data.riskScore is number
+        && data.riskScore >= 0
+        && data.riskScore <= 100
+        && isValidInputValues(data.inputValues)
+        && data.rulesFired is list
+        && data.rulesFired.size() >= 1
+        && data.rulesFired.size() <= 20
+        && data.rulesFired[0] is string
+        && data.rulesFired[0].size() >= 1
+        && data.rulesFired[0].size() <= 120
+        && data.thresholds is list
+        && data.thresholds.size() >= 1
+        && data.thresholds.size() <= 20
+        && data.thresholds[0] is string
+        && data.thresholds[0].size() >= 1
+        && data.thresholds[0].size() <= 200
+        && data.action is string
+        && data.action.size() <= 16
+        && data.action in ['CONTINUE', 'REDUCE SIZE', 'PAUSE']
+        && (data.decision == null || (data.decision is string && data.decision.size() <= 16 && data.decision in ['approved', 'dismissed']))
+        && (data.decidedAt == null || data.decidedAt is timestamp)
+        && data.candleTimestamp is string
+        && data.candleTimestamp.size() >= 1
+        && data.candleTimestamp.size() <= 40;
+    }
+
+    match /users/{userId}/decisions/{decisionId} {
+      allow get: if isValidId(decisionId)
+        && isVerifiedOwner(userId)
+        && existing().uid == request.auth.uid;
+
+      allow list: if isVerifiedOwner(userId)
+        && existing().uid == request.auth.uid;
+
+      allow create: if isValidId(decisionId)
+        && isVerifiedOwner(userId)
+        && isValidDecision(incoming())
+        && incoming().createdAt == request.time
+        && (
+          (incoming().decision == null && incoming().decidedAt == null)
+          || (incoming().decision in ['approved', 'dismissed'] && incoming().decidedAt == request.time)
+        );
+
+      allow update: if isValidId(decisionId)
+        && isVerifiedOwner(userId)
+        && isValidDecision(incoming())
+        && existing().uid == request.auth.uid
+        && existing().decision == null
+        && incoming().decision in ['approved', 'dismissed']
+        && incoming().decidedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['decision', 'decidedAt'])
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().symbol == existing().symbol
+        && incoming().timeframe == existing().timeframe
+        && incoming().regime == existing().regime
+        && incoming().riskScore == existing().riskScore
+        && incoming().inputValues == existing().inputValues
+        && incoming().rulesFired == existing().rulesFired
+        && incoming().thresholds == existing().thresholds
+        && incoming().action == existing().action
+        && incoming().candleTimestamp == existing().candleTimestamp;
+
+      allow delete: if false;
+    }
+  }
+}

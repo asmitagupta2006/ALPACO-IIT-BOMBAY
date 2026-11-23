@@ -9,6 +9,7 @@ import type {
   DeltaTickerSnapshot,
   HealthStatusResponse,
 } from '../contracts/delta';
+import type { Phase2RegimeResponse } from '../contracts/regime';
 
 export class ProxyRequestError extends Error {
   readonly status: number;
@@ -60,13 +61,14 @@ async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return parsed as T;
 }
 
-export function fetchHealth(signal?: AbortSignal): Promise<HealthStatusResponse> {
-  return fetch(('/api/health'), { headers: { Accept: 'application/json' }, signal }).then(
-    async (res) => {
-      const data = (await res.json()) as HealthStatusResponse;
-      return data;
-    },
-  );
+export async function fetchHealth(signal?: AbortSignal): Promise<HealthStatusResponse> {
+  const res = await fetch('/api/health', { headers: { Accept: 'application/json' }, signal });
+  const text = await res.text();
+  try {
+    return JSON.parse(text) as HealthStatusResponse;
+  } catch {
+    throw new Error(`Health endpoint returned invalid JSON (HTTP ${res.status})`);
+  }
 }
 
 export function fetchProducts(signal?: AbortSignal): Promise<ApiEnvelope<DeltaProductsPayload>> {
@@ -101,6 +103,29 @@ export function fetchCandles(
     basis: params.basis,
   });
   return fetchJson<ApiEnvelope<DeltaCandlesPayload>>(`/api/delta/candles?${qs.toString()}`, signal);
+}
+
+export function fetchDeltaRegime(
+  params: {
+    symbol: string;
+    resolution: CandleResolution;
+    start: number;
+    end: number;
+    basis: CandlePriceBasis;
+  },
+  signal?: AbortSignal,
+): Promise<ApiEnvelope<Phase2RegimeResponse>> {
+  const qs = new URLSearchParams({
+    symbol: params.symbol,
+    resolution: params.resolution,
+    start: String(params.start),
+    end: String(params.end),
+    basis: params.basis,
+  });
+  return fetchJson<ApiEnvelope<Phase2RegimeResponse>>(
+    `/api/delta/regime?${qs.toString()}`,
+    signal,
+  );
 }
 
 export function subscribeDeltaStream(params: {

@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
+import { createAlpacaRouter } from './server/routes/alpaca.ts';
 import { createDeltaRouter } from './server/routes/delta.ts';
+import { createSentinelRouter } from './server/routes/sentinel.ts';
+import { ensureSentinelInitialized } from './server/sentinelEngine.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,6 +20,15 @@ async function startServer(): Promise<void> {
 
   // Public read-only Delta Exchange India proxy routes
   app.use('/api', createDeltaRouter());
+  // Optional read-only Alpaca Market Data proxy routes
+  app.use('/api/alpaca', createAlpacaRouter());
+  // Regime Sentinel ML, safety guardrails, paper trading & audit API
+  app.use('/api/sentinel', createSentinelRouter());
+
+  // Warm up SQLite & baseline ML models in background without blocking port binding
+  void ensureSentinelInitialized().catch((err) => {
+    console.warn('[RegimeSentinel] Background model bootstrap warning:', err instanceof Error ? err.message : err);
+  });
 
   if (isProd) {
     const distDir = path.resolve(__dirname, 'dist');
