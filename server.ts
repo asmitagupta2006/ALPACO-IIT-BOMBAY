@@ -21,7 +21,7 @@ async function startServer(): Promise<void> {
   if (isProd) {
     const distDir = path.resolve(__dirname, 'dist');
     app.use(express.static(distDir));
-    app.get('/{*path}', (_req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   } else {
@@ -33,7 +33,7 @@ async function startServer(): Promise<void> {
 
     app.use(vite.middlewares);
 
-    app.get('/{*path}', async (req, res, next) => {
+    app.get('*', async (req, res, next) => {
       try {
         const indexPath = path.resolve(__dirname, 'index.html');
         const template = fs.readFileSync(indexPath, 'utf-8');
