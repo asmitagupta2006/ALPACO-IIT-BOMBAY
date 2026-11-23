@@ -257,8 +257,7 @@ export async function generateStructuredExplanation(
         }
 
         if (attempt < MAX_RETRY_ATTEMPTS && isRetryableError(err, timedOut)) {
-          const jitter = Math.floor(Math.random() * 150);
-          await sleep(BASE_BACKOFF_MS * Math.pow(2, attempt) + jitter);
+          await sleep(BASE_BACKOFF_MS * Math.pow(2, attempt));
           continue;
         }
         break;

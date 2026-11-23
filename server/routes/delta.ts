@@ -70,7 +70,7 @@ export function createDeltaRouter(): Router {
       checkedAt: new Date().toISOString(),
     };
 
-    res.status(restHealth.ok ? 200 : 503).json(payload);
+    res.status(200).json(payload);
   });
 
   router.get('/delta/products', async (req: Request, res: Response) => {

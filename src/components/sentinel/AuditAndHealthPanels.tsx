@@ -1,28 +1,55 @@
-import { useEffect, useState } from 'react';
-import { Download, RefreshCw, ShieldCheck } from 'lucide-react';
-import { fetchAuditLogs, fetchDataAudit } from '../../api/sentinelApi';
+import { useCallback, useEffect, useState } from 'react';
+import { AlertCircle, Download, RefreshCw, ShieldCheck } from 'lucide-react';
+import {
+  fetchAuditLogs,
+  fetchDataAudit,
+  SentinelRequestError,
+  type SentinelDbStats,
+} from '../../api/sentinelApi';
 import type { CandleResolution, HealthStatusResponse } from '../../contracts/delta';
 import type { AuditLogEntry, DatasetQualityReport } from '../../contracts/sentinel';
 import { formatDateTimeUtc, formatTimestamp } from '../../utils/format';
+
+interface PanelError {
+  message: string;
+  code: string;
+  timestamp: string;
+}
+
+function toPanelError(err: unknown): PanelError {
+  if (err instanceof SentinelRequestError) {
+    return { message: err.message, code: err.code, timestamp: err.timestamp };
+  }
+  return {
+    message: err instanceof Error ? err.message : 'Request failed',
+    code: 'REQUEST_FAILED',
+    timestamp: new Date().toISOString(),
+  };
+}
 
 export function AuditHistoryPanel() {
   const [logs, setLogs] = useState<AuditLogEntry[]>([]);
   const [filterType, setFilterType] = useState<string>('all');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<PanelError | null>(null);
 
-  const load = async (type: string) => {
+  const load = useCallback(async (type: string) => {
     setLoading(true);
+    setError(null);
     try {
       const res = await fetchAuditLogs(type);
       setLogs(res.logs);
+    } catch (err) {
+      setLogs([]);
+      setError(toPanelError(err));
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     void load(filterType);
-  }, [filterType]);
+  }, [filterType, load]);
 
   const exportCsv = () => {
     const header = 'id,timestamp,eventType,actor,strategyId,symbol,action,humanApproved\n';
@@ -54,10 +81,10 @@ export function AuditHistoryPanel() {
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
         <div>
           <h2 className="font-display text-sm font-semibold text-slate-100">
-            Audit &amp; Decision History (SQLite Persisted)
+            Audit &amp; Data Validation History (SQLite Persisted)
           </h2>
           <p className="mt-0.5 text-xs text-slate-400">
-            Immutable trail of model trainings, human-approved deployments, guardrail edits, kill switches, and simulations
+            Trail of Delta Exchange candle quality audits and system events
           </p>
         </div>
 
@@ -69,12 +96,9 @@ export function AuditHistoryPanel() {
             className="rounded border border-slate-700 bg-[#0B1120] px-2.5 py-1.5 text-xs text-slate-100"
           >
             <option value="all">All Event Types</option>
-            <option value="kill_switch">Kill Switch</option>
-            <option value="strategy_resume">Strategy Resume</option>
-            <option value="guardrail_update">Guardrail Update</option>
-            <option value="model_train">Model Training</option>
-            <option value="model_deploy">Model Deployment</option>
-            <option value="paper_simulation">Paper Simulation</option>
+            <option value="data_audit">Data Audits</option>
+            <option value="guardrail_decision">Guardrail Decisions</option>
+            <option value="system">System Events</option>
           </select>
 
           <button
@@ -99,7 +123,14 @@ export function AuditHistoryPanel() {
         </div>
       </div>
 
-      {logs.length === 0 ? (
+      {error ? (
+        <div className="rounded-md border border-rose-500/40 bg-rose-950/20 p-4 text-xs text-rose-200 space-y-1">
+          <p className="font-medium text-rose-100">{error.message}</p>
+          <p className="font-mono text-[11px] text-rose-300/85 tabular-nums">
+            Reason: {error.code} · Timestamp: {formatTimestamp(error.timestamp)}
+          </p>
+        </div>
+      ) : logs.length === 0 ? (
         <p className="py-6 text-xs text-slate-400">
           No audit events recorded for the active filter.
         </p>
@@ -156,7 +187,6 @@ interface SystemHealthPanelProps {
   health: HealthStatusResponse | null;
   symbol: string;
   resolution: CandleResolution;
-  dataMode: 'live' | 'demo';
   onRefreshHealth: () => void;
 }
 
@@ -164,19 +194,36 @@ export function SystemHealthPanel({
   health,
   symbol,
   resolution,
-  dataMode,
   onRefreshHealth,
 }: SystemHealthPanelProps) {
   const [audit, setAudit] = useState<{
     report: DatasetQualityReport;
-    dbStats: Record<string, unknown>;
+    dbStats: SentinelDbStats;
   } | null>(null);
+  const [auditError, setAuditError] = useState<PanelError | null>(null);
+
+  const loadAudit = useCallback(
+    (signal?: AbortSignal) => {
+      setAuditError(null);
+      void fetchDataAudit({ symbol, resolution, signal })
+        .then((res) => {
+          setAudit(res);
+          setAuditError(null);
+        })
+        .catch((err) => {
+          if (signal?.aborted) return;
+          setAudit(null);
+          setAuditError(toPanelError(err));
+        });
+    },
+    [symbol, resolution],
+  );
 
   useEffect(() => {
-    void fetchDataAudit({ symbol, resolution, mode: dataMode })
-      .then(setAudit)
-      .catch(() => null);
-  }, [symbol, resolution, dataMode]);
+    const controller = new AbortController();
+    loadAudit(controller.signal);
+    return () => controller.abort();
+  }, [loadAudit]);
 
   return (
     <div className="space-y-5">
@@ -187,12 +234,15 @@ export function SystemHealthPanel({
               System, Exchange API &amp; Pipeline Health
             </h2>
             <p className="mt-0.5 text-xs text-slate-400">
-              Delta Exchange India REST/WebSocket telemetry, cache stats, SQLite storage, and security controls
+              Delta Exchange India REST/WebSocket telemetry, cache stats, SQLite audit log, and security controls
             </p>
           </div>
           <button
             type="button"
-            onClick={onRefreshHealth}
+            onClick={() => {
+              onRefreshHealth();
+              loadAudit();
+            }}
             className="inline-flex items-center gap-1.5 rounded border border-slate-700 bg-[#0B1120] px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-slate-800 cursor-pointer"
           >
             <RefreshCw className="h-3.5 w-3.5" />
@@ -223,6 +273,23 @@ export function SystemHealthPanel({
           />
         </div>
 
+        {auditError && (
+          <div className="rounded-md border border-rose-500/40 bg-rose-950/20 p-4 text-xs text-rose-200 space-y-1">
+            <div className="flex items-start gap-2">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
+              <div className="space-y-1">
+                <p className="font-medium text-rose-100">
+                  Live Delta dataset audit failed ({symbol} · {resolution})
+                </p>
+                <p className="text-rose-200/90 break-words">{auditError.message}</p>
+                <p className="font-mono text-[11px] text-rose-300/85 tabular-nums">
+                  Reason: {auditError.code} · Timestamp: {formatTimestamp(auditError.timestamp)}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {audit && (
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 pt-2">
             <div className="rounded-md border border-slate-800 bg-[#0B1120] p-4 space-y-2 text-xs">
@@ -241,18 +308,16 @@ export function SystemHealthPanel({
 
             <div className="rounded-md border border-slate-800 bg-[#0B1120] p-4 space-y-2 text-xs">
               <h3 className="font-semibold text-slate-200">
-                SQLite Persistence &amp; Security Posture
+                SQLite Audit Store &amp; Security Posture
               </h3>
               <div className="grid grid-cols-2 gap-2 font-mono text-[11px] text-slate-300 tabular-nums">
-                <div>Stored Candles: {String(audit.dbStats.storedCandles ?? 0)}</div>
-                <div>Model Versions: {String(audit.dbStats.modelVersions ?? 0)}</div>
-                <div>Regime Alerts: {String(audit.dbStats.regimeAlerts ?? 0)}</div>
-                <div>Audit Entries: {String(audit.dbStats.auditLogs ?? 0)}</div>
+                <div>Dataset Audits: {audit.dbStats.datasetAudits}</div>
+                <div>Audit Log Entries: {audit.dbStats.auditLogs}</div>
               </div>
               <div className="pt-1 flex items-center gap-2 text-[11px] text-emerald-300">
                 <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
                 <span>
-                  Read-only public Delta proxy · Zero frontend secrets · Human approval required for live execution
+                  Read-only public Delta proxy · Zero frontend secrets · No order execution APIs
                 </span>
               </div>
             </div>

@@ -22,9 +22,8 @@ interface TopBarProps {
 const TOP_QUICK_LINKS: readonly { id: NavSectionId; label: string }[] = [
   { id: 'overview', label: 'Overview' },
   { id: 'monitor', label: 'Live Monitor' },
+  { id: 'regime', label: 'Regime Engine' },
   { id: 'guardrails', label: 'Guardrails' },
-  { id: 'training', label: 'ML Training' },
-  { id: 'deck', label: '6-Slide Deck' },
 ];
 
 export function TopBar({

@@ -32,7 +32,6 @@ import type {
   Phase2RegimeLabel,
   RegimeTransitionMarker,
 } from '../contracts/regime';
-import type { MarketRegime } from '../contracts/sentinel';
 import { engineerFeatures } from '../quant/indicators';
 import { formatNumber, formatPrice, formatTimestamp, getTickDecimals } from '../utils/format';
 
@@ -83,8 +82,6 @@ interface CandleChartPanelProps {
   fetchedAt: string | null;
   querySymbol: string | null;
   onRetry: () => void;
-  detectedRegime?: MarketRegime | null;
-  regimeConfidence?: number | null;
   phase2Regime?: Phase2RegimeLabel | null;
   phase2Score?: number | null;
   phase2Insufficient?: boolean;
@@ -113,8 +110,6 @@ export function CandleChartPanel({
   fetchedAt,
   querySymbol,
   onRetry,
-  detectedRegime,
-  regimeConfidence,
   phase2Regime,
   phase2Score,
   phase2Insufficient = false,
@@ -574,17 +569,7 @@ export function CandleChartPanel({
                 ? ` (${phase2Score.toFixed(1)}/100)`
                 : ''}
             </span>
-          ) : (
-            !isAlpaca &&
-            detectedRegime && (
-              <span className="text-sky-300">
-                Regime: {detectedRegime}
-                {regimeConfidence !== null && regimeConfidence !== undefined
-                  ? ` (${Math.round(regimeConfidence * 100)}%)`
-                  : ''}
-              </span>
-            )
-          )}
+          ) : null}
           {isAlpaca && alpacaFeedInfo && (
             <span
               title={alpacaFeedInfo.note}

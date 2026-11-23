@@ -1,5 +1,5 @@
-import type { CandleResolution, DeltaCandle } from '../contracts/delta';
-import type { DataSourceMode, DatasetQualityReport } from '../contracts/sentinel';
+import type { CandleResolution, DeltaCandle } from '../contracts/delta.ts';
+import type { DataSourceMode, DatasetQualityReport } from '../contracts/sentinel.ts';
 
 export function resolutionToSeconds(resolution: CandleResolution): number {
   switch (resolution) {
@@ -34,24 +34,23 @@ export interface CleanCandlesOutput {
 }
 
 /**
- * Cleans and validates raw OHLCV candle arrays without fabricating live data.
+ * Cleans and validates raw OHLCV candle arrays from Delta Exchange India without
+ * fabricating synthetic or carry-forward bars.
  * - Sorts chronologically and detects out-of-order timestamps
  * - Deduplicates identical timestamps (keeps last valid record)
  * - Repairs OHLC envelope anomalies (high >= max(O,C), low <= min(O,C))
- * - Detects missing interval gaps and optionally fills up to 6 consecutive missing bars
- *   with zero-volume flat carry-forward bars strictly for continuous rolling indicator stability
+ * - Detects and reports missing interval gaps accurately
  */
 export function cleanAndAuditCandles(params: {
   rawCandles: DeltaCandle[];
   symbol: string;
   resolution: CandleResolution;
-  sourceMode: DataSourceMode;
+  sourceMode?: DataSourceMode;
   nowUnixSec?: number;
-  fillShortGaps?: boolean;
 }): CleanCandlesOutput {
+  const sourceMode: DataSourceMode = params.sourceMode ?? 'live';
   const stepSec = resolutionToSeconds(params.resolution);
   const nowSec = params.nowUnixSec ?? Math.floor(Date.now() / 1000);
-  const fillShortGaps = params.fillShortGaps ?? true;
   const notes: string[] = [];
 
   if (params.rawCandles.length === 0) {
@@ -72,8 +71,8 @@ export function cleanAndAuditCandles(params: {
         lastBarTime: null,
         freshnessSeconds: null,
         isStale: true,
-        sourceMode: params.sourceMode,
-        notes: ['No candle observations available for inspection.'],
+        sourceMode,
+        notes: ['No candle observations returned from Delta Exchange India.'],
       },
     };
   }
@@ -82,7 +81,6 @@ export function cleanAndAuditCandles(params: {
   let anomaliesRepaired = 0;
   let duplicatesRemoved = 0;
 
-  // Check ordering before sorting
   for (let i = 1; i < params.rawCandles.length; i++) {
     if (params.rawCandles[i].time < params.rawCandles[i - 1].time) {
       nonMonotonicFixed += 1;
@@ -131,67 +129,42 @@ export function cleanAndAuditCandles(params: {
     });
   }
 
-  const sorted = Array.from(deduped.values()).sort((a, b) => a.time - b.time);
+  const cleaned = Array.from(deduped.values()).sort((a, b) => a.time - b.time);
 
   let missingBarsDetected = 0;
-  let missingBarsFilled = 0;
-  const cleaned: DeltaCandle[] = [];
-
-  for (let i = 0; i < sorted.length; i++) {
-    const current = sorted[i];
-    if (i > 0) {
-      const prev = sorted[i - 1];
-      const delta = current.time - prev.time;
-      if (delta > stepSec * 1.5) {
-        const missed = Math.max(0, Math.round(delta / stepSec) - 1);
-        missingBarsDetected += missed;
-        if (fillShortGaps && missed > 0 && missed <= 6) {
-          for (let k = 1; k <= missed; k++) {
-            cleaned.push({
-              time: prev.time + k * stepSec,
-              open: prev.close,
-              high: prev.close,
-              low: prev.close,
-              close: prev.close,
-              volume: 0,
-            });
-            missingBarsFilled += 1;
-          }
-        }
-      }
+  for (let i = 1; i < cleaned.length; i++) {
+    const prev = cleaned[i - 1];
+    const current = cleaned[i];
+    const delta = current.time - prev.time;
+    if (delta > stepSec * 1.5) {
+      const missed = Math.max(0, Math.round(delta / stepSec) - 1);
+      missingBarsDetected += missed;
     }
-    cleaned.push(current);
   }
 
+  const missingBarsFilled = 0;
   const firstBarTime = cleaned[0]?.time ?? null;
   const lastBarTime = cleaned[cleaned.length - 1]?.time ?? null;
   const freshnessSeconds = lastBarTime !== null ? Math.max(0, nowSec - lastBarTime) : null;
   const isStale = freshnessSeconds === null || freshnessSeconds > stepSec * 4;
 
-  // Transparent deterministic quality score 0..100
   const total = Math.max(1, params.rawCandles.length);
   const gapRatio = missingBarsDetected / total;
   const anomalyRatio = anomaliesRepaired / total;
   const dupRatio = duplicatesRemoved / total;
 
   let qualityScore = 100 - gapRatio * 45 - anomalyRatio * 60 - dupRatio * 20;
-  if (isStale && params.sourceMode !== 'demo_fallback') {
+  if (isStale) {
     qualityScore -= 12;
   }
-  if (cleaned.length < 220) {
+  if (cleaned.length < 121) {
     qualityScore -= 10;
-    notes.push(`Limited history (${cleaned.length} bars); EMA200 warm-up uses available prefix.`);
+    notes.push(`Limited history (${cleaned.length} bars); below 121-bar volatility baseline warm-up.`);
   }
-  if (params.sourceMode === 'demo_fallback') {
-    notes.push('Demo Fallback mode active: synthetic regime-calibrated OHLCV series clearly labeled.');
-  } else if (params.sourceMode === 'historical_cache') {
-    notes.push('Serving persisted Delta Exchange India historical bars from SQLite cache.');
-  } else {
-    notes.push('Live Delta Exchange India REST/WebSocket market data validated.');
-  }
+  notes.push('Live Delta Exchange India REST/WebSocket market data validated.');
   if (missingBarsDetected > 0) {
     notes.push(
-      `Detected ${missingBarsDetected} missing ${params.resolution} intervals (${missingBarsFilled} short-gap carry-forward).`,
+      `Detected ${missingBarsDetected} missing ${params.resolution} intervals (no synthetic bars inserted).`,
     );
   }
   if (duplicatesRemoved > 0) {
@@ -220,7 +193,7 @@ export function cleanAndAuditCandles(params: {
       lastBarTime,
       freshnessSeconds,
       isStale,
-      sourceMode: params.sourceMode,
+      sourceMode,
       notes,
     },
   };

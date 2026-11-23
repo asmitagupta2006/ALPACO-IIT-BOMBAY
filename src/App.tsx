@@ -22,12 +22,8 @@ import {
   toAlertExplanationSummary,
 } from './api/explainApi';
 import {
-  acknowledgeAlert,
-  fetchAlerts,
   fetchSentinelOverview,
-  resumeStrategies,
-  triggerKillSwitch,
-  updateGuardrailConfig,
+  SentinelRequestError,
 } from './api/sentinelApi';
 import {
   CandleChartPanel,
@@ -39,7 +35,6 @@ import { GuardrailAlertFeed } from './components/GuardrailAlertFeed';
 import { GuardrailRulesPanel } from './components/GuardrailRulesPanel';
 import { InstrumentPicker } from './components/InstrumentPicker';
 import { LiveTickerStrip } from './components/LiveTickerStrip';
-import { PhaseRoadmapStrip } from './components/PhaseRoadmapStrip';
 import {
   RegimeCard,
   type RegimeChangeExplanationEntry,
@@ -49,18 +44,12 @@ import {
   AuditHistoryPanel,
   SystemHealthPanel,
 } from './components/sentinel/AuditAndHealthPanels';
-import { CompetitionDeckPanel } from './components/sentinel/CompetitionDeckPanel';
-import { ExplainabilityPanel } from './components/sentinel/ExplainabilityPanel';
-import { GuardrailCenterPanel } from './components/sentinel/GuardrailCenterPanel';
 import {
   OverviewDashboard,
   type NavSectionId,
+  type SentinelErrorInfo,
 } from './components/sentinel/OverviewDashboard';
-import { PaperSimulatorPanel } from './components/sentinel/PaperSimulatorPanel';
 import { RegimeEnginePanel } from './components/sentinel/RegimeEnginePanel';
-import { RiskPredictionPanel } from './components/sentinel/RiskPredictionPanel';
-import { StrategyHealthPanel } from './components/sentinel/StrategyHealthPanel';
-import { TrainingCenterPanel } from './components/sentinel/TrainingCenterPanel';
 import { WorkspaceSidebar } from './components/sentinel/WorkspaceSidebar';
 import {
   formatDataModeLabel,
@@ -95,11 +84,7 @@ import type {
   GuardrailInputSnapshot,
   GuardrailRule,
 } from './contracts/guardrails';
-import type {
-  GuardrailConfig,
-  RegimeTransitionAlert,
-  SentinelOverviewResponse,
-} from './contracts/sentinel';
+import type { SentinelOverviewResponse } from './contracts/sentinel';
 import {
   formatFirestoreErrorMessage,
   signInWithGoogle,
@@ -246,14 +231,11 @@ export default function App() {
   const [alpacaCandlesError, setAlpacaCandlesError] = useState<ErrorState | null>(null);
   const [alpacaCandlesFetchedAt, setAlpacaCandlesFetchedAt] = useState<string | null>(null);
 
-  // Regime Sentinel AI Engine state
+  // Regime Sentinel Live Overview state
   const [analysisSymbol, setAnalysisSymbol] = useState<string>('BTCUSD');
-  const [dataMode, setDataMode] = useState<'live' | 'demo'>('live');
   const [overview, setOverview] = useState<SentinelOverviewResponse | null>(null);
   const [overviewLoading, setOverviewLoading] = useState<boolean>(true);
-  const [overviewError, setOverviewError] = useState<string | null>(null);
-  const [alerts, setAlerts] = useState<RegimeTransitionAlert[]>([]);
-  const [explainStrategyId, setExplainStrategyId] = useState<string>('strat-btc-momentum');
+  const [overviewError, setOverviewError] = useState<SentinelErrorInfo | null>(null);
 
   const sentinelResolution: CandleResolution = SENTINEL_RESOLUTIONS.includes(resolution)
     ? resolution
@@ -436,20 +418,29 @@ export default function App() {
   );
 
   const loadSentinelOverview = useCallback(
-    async (sym: string, res: CandleResolution, mode: 'live' | 'demo', signal?: AbortSignal) => {
+    async (sym: string, res: CandleResolution, signal?: AbortSignal) => {
       setOverviewLoading(true);
       setOverviewError(null);
       try {
-        const [ov, alertRes] = await Promise.all([
-          fetchSentinelOverview({ symbol: sym, resolution: res, mode, signal }),
-          fetchAlerts(),
-        ]);
+        const ov = await fetchSentinelOverview({ symbol: sym, resolution: res, signal });
         if (signal?.aborted) return;
         setOverview(ov);
-        setAlerts(alertRes.alerts);
       } catch (err) {
         if (signal?.aborted) return;
-        setOverviewError(err instanceof Error ? err.message : 'Failed to compute Sentinel telemetry');
+        setOverview(null);
+        if (err instanceof SentinelRequestError) {
+          setOverviewError({
+            message: err.message,
+            code: err.code,
+            timestamp: err.timestamp,
+          });
+        } else {
+          setOverviewError({
+            message: err instanceof Error ? err.message : 'Failed to load Delta overview',
+            code: 'DELTA_OVERVIEW_ERROR',
+            timestamp: new Date().toISOString(),
+          });
+        }
       } finally {
         if (!signal?.aborted) {
           setOverviewLoading(false);
@@ -620,18 +611,18 @@ export default function App() {
     loadAlpacaCandles,
   ]);
 
-  // Load Sentinel overview & refresh periodically
+  // Load live Sentinel overview & refresh periodically
   useEffect(() => {
     const controller = new AbortController();
-    void loadSentinelOverview(analysisSymbol, sentinelResolution, dataMode, controller.signal);
+    void loadSentinelOverview(analysisSymbol, sentinelResolution, controller.signal);
     const timer = setInterval(() => {
-      void loadSentinelOverview(analysisSymbol, sentinelResolution, dataMode);
+      void loadSentinelOverview(analysisSymbol, sentinelResolution);
     }, 45_000);
     return () => {
       controller.abort();
       clearInterval(timer);
     };
-  }, [analysisSymbol, sentinelResolution, dataMode, loadSentinelOverview]);
+  }, [analysisSymbol, sentinelResolution, loadSentinelOverview]);
 
   // Reset ticker, candles, and regime cleanly when switching instrument
   const handleSelectSymbol = useCallback((symbol: string) => {
@@ -698,31 +689,7 @@ export default function App() {
     };
   }, [selectedSymbol, resolution, lookbackId, basis, loadTicker, loadCandles]);
 
-  const handleAcknowledgeAlert = useCallback(async (id: string) => {
-    await acknowledgeAlert(id);
-    setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, acknowledged: true } : a)));
-  }, []);
 
-  const handleSaveGuardrail = useCallback(
-    async (config: GuardrailConfig) => {
-      await updateGuardrailConfig(config);
-      await loadSentinelOverview(analysisSymbol, sentinelResolution, dataMode);
-    },
-    [analysisSymbol, sentinelResolution, dataMode, loadSentinelOverview],
-  );
-
-  const handleKillSwitch = useCallback(
-    async (reason: string) => {
-      await triggerKillSwitch({ confirmed: true, reason });
-      await loadSentinelOverview(analysisSymbol, sentinelResolution, dataMode);
-    },
-    [analysisSymbol, sentinelResolution, dataMode, loadSentinelOverview],
-  );
-
-  const handleResumeStrategies = useCallback(async () => {
-    await resumeStrategies(true);
-    await loadSentinelOverview(analysisSymbol, sentinelResolution, dataMode);
-  }, [analysisSymbol, sentinelResolution, dataMode, loadSentinelOverview]);
 
   // Phase 3: Firebase Auth listener + Firestore user decisions subscription
   useEffect(() => {
@@ -1183,13 +1150,9 @@ export default function App() {
     [guardrailAlerts, authUser],
   );
 
-  const unacknowledgedAlertCount = useMemo(
-    () => alerts.filter((a) => !a.acknowledged).length,
-    [alerts],
-  );
-  const anyKilled = useMemo(
-    () => overview?.strategies.some((s) => s.guardrail.status === 'killed') ?? false,
-    [overview],
+  const pendingGuardrailAlertCount = useMemo(
+    () => guardrailAlerts.filter((a) => a.status === 'pending').length,
+    [guardrailAlerts],
   );
 
   const availableAnalysisSymbols = useMemo(() => {
@@ -1221,8 +1184,7 @@ export default function App() {
         <WorkspaceSidebar
           activeSection={activeSection}
           onSelectSection={setActiveSection}
-          unacknowledgedAlertCount={unacknowledgedAlertCount}
-          anyKilled={anyKilled}
+          pendingAlertCount={pendingGuardrailAlertCount}
           mobileOpen={mobileSidebarOpen}
           onCloseMobile={() => setMobileSidebarOpen(false)}
         />
@@ -1276,33 +1238,9 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-1.5">
-                <span className="text-[11px] font-medium text-slate-400">Data Source</span>
-                <div className="flex rounded-md border border-slate-800 bg-[#0B1120] p-0.5">
-                  <button
-                    type="button"
-                    onClick={() => setDataMode('live')}
-                    className={`rounded px-2.5 py-1 text-xs font-medium whitespace-nowrap cursor-pointer transition-colors ${
-                      dataMode === 'live'
-                        ? 'bg-emerald-500/20 text-emerald-200 border border-emerald-500/40'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    Live Delta
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setDataMode('demo')}
-                    className={`rounded px-2.5 py-1 text-xs font-medium whitespace-nowrap cursor-pointer transition-colors ${
-                      dataMode === 'demo'
-                        ? 'bg-amber-500/20 text-amber-200 border border-amber-500/40'
-                        : 'text-slate-400 hover:text-slate-200'
-                    }`}
-                  >
-                    Demo Fallback
-                  </button>
-                </div>
-              </div>
+              <span className="rounded border border-emerald-500/35 bg-emerald-950/25 px-2.5 py-1 text-[11px] font-medium text-emerald-200">
+                Source: Live Delta Exchange India
+              </span>
             </div>
 
             <div className="flex flex-wrap items-center gap-2.5">
@@ -1312,10 +1250,12 @@ export default function App() {
                   <>
                     <span
                       className={`rounded border px-2 py-1 text-[11px] font-medium ${regimeBadgeClass(
-                        overview.regime.regime,
+                        overview.regime.sufficientData ? overview.regime.currentRegime : null,
                       )}`}
                     >
-                      {overview.regime.regime} ({Math.round(overview.regime.confidence * 100)}%)
+                      {overview.regime.sufficientData && overview.regime.currentRegime
+                        ? `${overview.regime.currentRegime} (${overview.regime.score?.toFixed(1) ?? '—'}/100)`
+                        : 'Insufficient data'}
                     </span>
                     <span
                       className={`rounded border px-2 py-1 font-mono text-[11px] ${modeBadge.toneClass}`}
@@ -1327,7 +1267,7 @@ export default function App() {
               })()}
               <button
                 type="button"
-                onClick={() => void loadSentinelOverview(analysisSymbol, sentinelResolution, dataMode)}
+                onClick={() => void loadSentinelOverview(analysisSymbol, sentinelResolution)}
                 disabled={overviewLoading}
                 className="inline-flex items-center gap-1.5 rounded border border-slate-700 bg-[#0B1120] px-2.5 py-1 text-xs font-medium text-slate-200 hover:bg-slate-800 cursor-pointer disabled:opacity-50"
               >
@@ -1343,12 +1283,15 @@ export default function App() {
               overview={overview}
               isLoading={overviewLoading}
               error={overviewError}
-              onRetry={() => void loadSentinelOverview(analysisSymbol, sentinelResolution, dataMode)}
+              onRetry={() => void loadSentinelOverview(analysisSymbol, sentinelResolution)}
               onNavigate={setActiveSection}
-              onSelectStrategyForExplain={(id) => {
-                setExplainStrategyId(id);
-                setActiveSection('explain');
+              onSelectSymbolResolution={(sym, res) => {
+                setAnalysisSymbol(sym);
+                setResolution(res);
               }}
+              guardrailRules={guardrailRules}
+              guardrailAlerts={guardrailAlerts}
+              guardrailEvaluation={guardrailEvaluation}
             />
           )}
 
@@ -1416,8 +1359,6 @@ export default function App() {
                             void loadCandles(selectedSymbol, resolution, lookbackId, basis);
                           }
                         }}
-                        detectedRegime={overview?.regime.regime ?? null}
-                        regimeConfidence={overview?.regime.confidence ?? null}
                         phase2Regime={
                           phase2Regime?.sufficientData ? phase2Regime.currentRegime : null
                         }
@@ -1654,8 +1595,8 @@ export default function App() {
           {activeSection === 'regime' && (
             <RegimeEnginePanel
               overview={overview}
-              alerts={alerts}
-              onAcknowledgeAlert={(id) => void handleAcknowledgeAlert(id)}
+              error={overviewError}
+              onRetry={() => void loadSentinelOverview(analysisSymbol, sentinelResolution)}
               onSelectSymbolResolution={(sym, res) => {
                 setAnalysisSymbol(sym);
                 setResolution(res);
@@ -1663,55 +1604,42 @@ export default function App() {
             />
           )}
 
-          {activeSection === 'health' && (
-            <StrategyHealthPanel
-              overview={overview}
-              onInspectExplanation={(id) => {
-                setExplainStrategyId(id);
-                setActiveSection('explain');
-              }}
-            />
-          )}
-
-          {activeSection === 'risk' && (
-            <RiskPredictionPanel
-              overview={overview}
-              onInspectExplanation={(id) => {
-                setExplainStrategyId(id);
-                setActiveSection('explain');
-              }}
-            />
-          )}
-
           {activeSection === 'guardrails' && (
-            <GuardrailCenterPanel
-              overview={overview}
-              onSaveGuardrail={handleSaveGuardrail}
-              onKillSwitch={handleKillSwitch}
-              onResumeStrategies={handleResumeStrategies}
-            />
-          )}
+            <div className="space-y-5">
+              <GuardrailRulesPanel
+                rules={guardrailRules}
+                onAddRule={handleAddGuardrailRule}
+                onToggleRule={handleToggleGuardrailRule}
+                onDeleteRule={handleDeleteGuardrailRule}
+                cooldownSeconds={cooldownSeconds}
+                onChangeCooldownSeconds={setCooldownSeconds}
+                evaluation={guardrailEvaluation}
+              />
 
-          {activeSection === 'explain' && (
-            <ExplainabilityPanel
-              overview={overview}
-              selectedStrategyId={explainStrategyId}
-              onSelectStrategyId={setExplainStrategyId}
-              resolution={sentinelResolution}
-              dataMode={dataMode}
-            />
-          )}
+              <GuardrailAlertFeed
+                alerts={guardrailAlerts}
+                user={authUser}
+                authLoading={authLoading}
+                authError={authError}
+                explainConfigured={explainStatus?.configured ?? false}
+                explainDisabledReason={explainStatus?.reason ?? null}
+                onSignIn={() => void handleGoogleSignIn()}
+                onDecide={(id, dec) => void handleDecideGuardrailAlert(id, dec)}
+                onRetrySave={(id) => void handleRetrySaveGuardrailAlert(id)}
+                onRetryExplain={handleRetryAlertExplain}
+              />
 
-          {activeSection === 'paper' && <PaperSimulatorPanel />}
-
-          {activeSection === 'training' && (
-            <TrainingCenterPanel
-              symbol={analysisSymbol}
-              resolution={sentinelResolution}
-              onModelDeployed={() =>
-                void loadSentinelOverview(analysisSymbol, sentinelResolution, dataMode)
-              }
-            />
+              <DecisionLogPanel
+                user={authUser}
+                authLoading={authLoading}
+                onSignIn={() => void handleGoogleSignIn()}
+                records={decisionRecords}
+                loading={decisionsLoading}
+                error={decisionsError}
+                lastUpdated={decisionsLastUpdated}
+                onRefresh={() => void handleRefreshDecisionLog()}
+              />
+            </div>
           )}
 
           {activeSection === 'audit' && <AuditHistoryPanel />}
@@ -1753,26 +1681,20 @@ export default function App() {
           )}
 
           {activeSection === 'system' && (
-            <div className="space-y-5">
-              <SystemHealthPanel
-                health={health}
-                symbol={analysisSymbol}
-                resolution={sentinelResolution}
-                dataMode={dataMode}
-                onRefreshHealth={() => void loadHealth()}
-              />
-              <PhaseRoadmapStrip />
-            </div>
+            <SystemHealthPanel
+              health={health}
+              symbol={analysisSymbol}
+              resolution={sentinelResolution}
+              onRefreshHealth={() => void loadHealth()}
+            />
           )}
-
-          {activeSection === 'deck' && <CompetitionDeckPanel overview={overview} />}
         </main>
       </div>
 
       <footer className="border-t border-slate-800/80 bg-[#0B1120] px-6 py-4">
         <div className="mx-auto flex max-w-[1680px] flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
           <span>
-            Regime Sentinel · Delta Exchange × Techfest 2026–27 · Paper Safety Default · Not financial advice.
+            Regime Sentinel · Read-Only Market Regime Monitor &amp; Guardrail Decision Log · Not financial advice.
           </span>
           <span className="font-mono text-[11px] text-slate-500">
             Data proxied server-side from api.india.delta.exchange (public market data only)

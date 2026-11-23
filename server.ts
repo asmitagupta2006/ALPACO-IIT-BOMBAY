@@ -7,7 +7,6 @@ import { createAlpacaRouter } from './server/routes/alpaca.ts';
 import { createDeltaRouter } from './server/routes/delta.ts';
 import { createExplainRouter } from './server/routes/explain.ts';
 import { createSentinelRouter } from './server/routes/sentinel.ts';
-import { ensureSentinelInitialized } from './server/sentinelEngine.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -25,13 +24,8 @@ async function startServer(): Promise<void> {
   app.use('/api', createExplainRouter());
   // Optional read-only Alpaca Market Data proxy routes
   app.use('/api/alpaca', createAlpacaRouter());
-  // Regime Sentinel ML, safety guardrails, paper trading & audit API
+  // Regime Sentinel live data audit & overview API
   app.use('/api/sentinel', createSentinelRouter());
-
-  // Warm up SQLite & baseline ML models in background without blocking port binding
-  void ensureSentinelInitialized().catch((err) => {
-    console.warn('[RegimeSentinel] Background model bootstrap warning:', err instanceof Error ? err.message : err);
-  });
 
   if (isProd) {
     const distDir = path.resolve(__dirname, 'dist');

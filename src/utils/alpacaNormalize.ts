@@ -3,8 +3,8 @@ import type {
   AlpacaFeedInfo,
   AlpacaRawBar,
   AlpacaStockFeed,
-} from '../contracts/alpaca';
-import type { CandleResolution, DeltaCandle } from '../contracts/delta';
+} from '../contracts/alpaca.ts';
+import type { CandleResolution, DeltaCandle } from '../contracts/delta.ts';
 
 const RESOLUTION_TO_ALPACA: Record<CandleResolution, string> = {
   '1m': '1Min',

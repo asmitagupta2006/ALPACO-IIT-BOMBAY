@@ -95,7 +95,7 @@ async function fetchDeltaJson<T>(pathAndQuery: string): Promise<T> {
       }
 
       if (response.status >= 500 && attempt < MAX_RETRY_ATTEMPTS) {
-        await sleep(300 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 120));
+        await sleep(300 * Math.pow(2, attempt - 1));
         continue;
       }
 
@@ -131,7 +131,7 @@ async function fetchDeltaJson<T>(pathAndQuery: string): Promise<T> {
         break;
       }
       if (attempt < MAX_RETRY_ATTEMPTS) {
-        await sleep(300 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 120));
+        await sleep(300 * Math.pow(2, attempt - 1));
       }
     }
   }

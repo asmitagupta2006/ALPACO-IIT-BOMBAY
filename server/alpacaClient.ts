@@ -166,7 +166,7 @@ async function fetchAlpacaMarketDataJson<T>(pathAndQuery: string): Promise<T> {
       }
 
       if (response.status >= 500 && attempt < MAX_RETRY_ATTEMPTS) {
-        await sleep(350 * Math.pow(2, attempt - 1) + Math.floor(Math.random() * 120));
+        await sleep(350 * Math.pow(2, attempt - 1));
         continue;
       }
 

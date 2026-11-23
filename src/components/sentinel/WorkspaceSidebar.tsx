@@ -1,17 +1,11 @@
 import {
   Activity,
-  Brain,
   CandlestickChart,
-  Cpu,
   FileSpreadsheet,
-  FlaskConical,
-  HeartPulse,
   History,
   LayoutDashboard,
-  Lightbulb,
-  Presentation,
   ShieldAlert,
-  TrendingDown,
+  TrendingUp,
 } from 'lucide-react';
 import type { NavSectionId } from './OverviewDashboard';
 
@@ -28,8 +22,7 @@ interface NavGroup {
 interface WorkspaceSidebarProps {
   activeSection: NavSectionId;
   onSelectSection: (section: NavSectionId) => void;
-  unacknowledgedAlertCount: number;
-  anyKilled: boolean;
+  pendingAlertCount: number;
   mobileOpen: boolean;
   onCloseMobile: () => void;
 }
@@ -37,8 +30,7 @@ interface WorkspaceSidebarProps {
 export function WorkspaceSidebar({
   activeSection,
   onSelectSection,
-  unacknowledgedAlertCount,
-  anyKilled,
+  pendingAlertCount,
   mobileOpen,
   onCloseMobile,
 }: WorkspaceSidebarProps) {
@@ -51,39 +43,23 @@ export function WorkspaceSidebar({
       ],
     },
     {
-      groupLabel: 'Runtime AI Engines',
+      groupLabel: 'Detection & Guardrails',
       items: [
-        {
-          id: 'regime',
-          label: 'AI Regime Engine',
-          icon: Brain,
-          badge: unacknowledgedAlertCount > 0 ? String(unacknowledgedAlertCount) : undefined,
-        },
-        { id: 'health', label: 'Strategy Health Monitor', icon: HeartPulse },
-        { id: 'risk', label: 'AI Risk Prediction', icon: TrendingDown },
-        { id: 'explain', label: 'AI Explanation Center', icon: Lightbulb },
-      ],
-    },
-    {
-      groupLabel: 'Safety & Simulation',
-      items: [
+        { id: 'regime', label: 'Regime Detection Engine', icon: TrendingUp },
         {
           id: 'guardrails',
-          label: 'Risk Guardrail Center',
+          label: 'Guardrails & Decision Log',
           icon: ShieldAlert,
-          badge: anyKilled ? 'HALTED' : undefined,
+          badge: pendingAlertCount > 0 ? String(pendingAlertCount) : undefined,
         },
-        { id: 'paper', label: 'Paper Trading Simulator', icon: FlaskConical },
-        { id: 'training', label: 'AI Model Training Center', icon: Cpu },
       ],
     },
     {
       groupLabel: 'Governance & Specs',
       items: [
-        { id: 'audit', label: 'Audit & Decision History', icon: History },
+        { id: 'audit', label: 'Audit & Data History', icon: History },
         { id: 'specs', label: 'Contract Specifications', icon: FileSpreadsheet },
         { id: 'system', label: 'System & API Health', icon: Activity },
-        { id: 'deck', label: 'Competition 6-Slide Deck', icon: Presentation },
       ],
     },
   ];
@@ -126,13 +102,7 @@ export function WorkspaceSidebar({
                     <span className="truncate">{item.label}</span>
                   </span>
                   {item.badge && (
-                    <span
-                      className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums shrink-0 ${
-                        item.badge === 'HALTED'
-                          ? 'bg-rose-950/60 text-rose-300 border border-rose-500/40'
-                          : 'bg-amber-950/50 text-amber-300 border border-amber-500/35'
-                      }`}
-                    >
+                    <span className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold tabular-nums shrink-0 bg-amber-950/50 text-amber-300 border border-amber-500/35">
                       {item.badge}
                     </span>
                   )}
@@ -144,9 +114,9 @@ export function WorkspaceSidebar({
       </nav>
 
       <div className="rounded-md border border-slate-800/90 bg-[#0B1120] p-3 text-[11px] text-slate-400 space-y-1">
-        <div className="font-semibold text-slate-200">Paper Safety Default</div>
+        <div className="font-semibold text-slate-200">Read-Only Public Proxy</div>
         <p className="leading-relaxed">
-          All strategies run in paper-monitored mode. Live kill-switch, resume, and model promotion require explicit operator confirmation.
+          Streams live public Delta Exchange India market data with deterministic regime calculation. No order execution APIs exist; guardrail alerts record human decisions only.
         </p>
       </div>
     </div>
@@ -154,12 +124,10 @@ export function WorkspaceSidebar({
 
   return (
     <>
-      {/* Desktop Sticky Sidebar */}
       <aside className="hidden lg:block w-[248px] shrink-0 rounded-lg border border-slate-800/90 bg-[#111A2E] sticky top-[69px] max-h-[calc(100vh-88px)] overflow-y-auto">
         {navContent}
       </aside>
 
-      {/* Mobile Drawer */}
       {mobileOpen && (
         <div className="fixed inset-0 z-40 lg:hidden flex">
           <div
